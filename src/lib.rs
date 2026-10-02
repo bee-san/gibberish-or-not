@@ -17,21 +17,27 @@ pub use model::{
 #[doc(hidden)]
 pub use cli::download_with_progress_bar;
 
-/// Sensitivity level for gibberish detection
+/// Sensitivity level for gibberish detection: how readily text is classified as English.
+///
+/// A higher sensitivity flags more text as English. `Low` is the strictest level and
+/// `High` the most lenient.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sensitivity {
-    /// High sensitivity - requires very high confidence to classify as English.
-    /// Best for texts that appear English-like but are actually gibberish.
-    /// Relies heavily on dictionary word matching.
+    /// High sensitivity - the most lenient classification as English.
+    /// Little evidence is needed (the lowest composite-score threshold), and the
+    /// high-entropy and no-English-word rejections are skipped.
+    /// Best when input is expected to be mostly gibberish, and any English-like
+    /// patterns should be flagged as potential English text.
     High,
 
     /// Medium sensitivity - balanced approach using both dictionary and n-gram analysis.
     /// Suitable for general purpose text classification.
     Medium,
 
-    /// Low sensitivity - more lenient classification as English.
-    /// Best when input is expected to be mostly gibberish, and any English-like
-    /// patterns should be flagged as potential English text.
+    /// Low sensitivity - the strictest classification: requires the most evidence to
+    /// classify text as English (the highest composite-score threshold), and three or more
+    /// dictionary words alone are not enough.
+    /// Best for texts that appear English-like but are actually gibberish.
     Low,
 }
 
@@ -162,10 +168,10 @@ pub fn is_password(text: &str) -> bool {
 /// # Arguments
 ///
 /// * `text` - The input text to analyze
-/// * `sensitivity` - Controls how strict the gibberish detection should be:
-///   - High: Very strict, requires high confidence to classify as English
+/// * `sensitivity` - Controls how readily text is classified as English:
+///   - High: Most lenient, flags English-like patterns as non-gibberish
 ///   - Medium: Balanced approach using dictionary and n-grams
-///   - Low: More lenient, flags English-like patterns as non-gibberish
+///   - Low: Most strict, requires high confidence to classify as English
 ///
 /// # Algorithm Steps
 ///
