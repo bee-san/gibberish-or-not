@@ -494,7 +494,9 @@ impl Pack {
         // Lower-case overrides (Turkish I -> ı ...)
         let mut case_overrides = Vec::new();
         if let Some(s) = section(b"CASE")? {
-            for e in s.as_chunks::<8>().0 {
+            // chunks_exact rather than as_chunks (Rust 1.88), for older toolchains
+            #[allow(clippy::chunks_exact_to_as_chunks)]
+            for e in s.chunks_exact(8) {
                 let from = char::from_u32(u32_at(e, 0)).ok_or(PackError::Invalid("CASE"))?;
                 let to = char::from_u32(u32_at(e, 4)).ok_or(PackError::Invalid("CASE"))?;
                 case_overrides.push((from, to));
