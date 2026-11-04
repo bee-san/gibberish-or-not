@@ -30,6 +30,8 @@ fn load() -> Vec<Arc<Pack>> {
     #[cfg(feature = "en")]
     builtin!(v, "en");
     // --- es ---
+    #[cfg(feature = "es")]
+    builtin!(v, "es");
     // --- fr ---
     // --- de ---
     // --- it ---
