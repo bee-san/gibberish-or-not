@@ -532,6 +532,37 @@ fn cmd_report(args: &Args) -> Result<(), String> {
         let _ = writeln!(out);
     }
 
+    // Gate 1 for Chinese and Japanese: every category but `phrase`, and the phrases apart
+    let cut = |l: &str| matches!(l, "zh" | "ja");
+    if langs.iter().any(|l| cut(l)) {
+        let _ = writeln!(out, "\n## Chinese and Japanese without phrases (gate 1)\n\nTheir `phrase` positives are cuts of 2-8 characters at random positions, not whole words, and junk made from them is often real text: gate 1 counts every other category (docs/languages.md). Recall at Low / Medium / High.\n\n| lang | n | recall without phrases | phrases | phrase recall |\n|---|---:|---|---:|---|");
+        for l in langs.iter().filter(|l| cut(l)) {
+            let recall = |phrase: bool| -> (usize, String) {
+                let idx: Vec<usize> = samples
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| {
+                        s.label == Label::Pos && &s.lang == l && (s.category == "phrase") == phrase
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let r: Vec<String> = (0..3)
+                    .map(|i| {
+                        pct(ratio(
+                            idx.iter()
+                                .filter(|&&j| systems[0].verdicts[j].is_some_and(|v| v[i]))
+                                .count(),
+                            idx.len(),
+                        ))
+                    })
+                    .collect();
+                (idx.len(), r.join(" / "))
+            };
+            let ((n, r), (np, rp)) = (recall(false), recall(true));
+            let _ = writeln!(out, "| {l} | {n} | {r} | {np} | {rp} |");
+        }
+    }
+
     // Languages: recall and confusion
     let _ = writeln!(out, "\n## Languages\n\nRecall of each language's positives (Low / Medium / High), and which language the detector reports for them (at High, the most lenient level, so every accepted text has a language).\n");
     let _ = write!(out, "| lang | n | gon6 recall |");
@@ -1129,7 +1160,7 @@ fn placeholder_calibration(lang: Lang) -> String {
 /// Per-language files, so the language PRs don't conflict.
 fn cmd_gate(args: &Args) -> Result<(), String> {
     const RECALL_TOLERANCE: f64 = 0.002;
-    use fit::{FPR_CEILING_FACTOR, FPR_CEILING_SLACK};
+    use fit::{BUCKET_CONCENTRATION, FPR_CEILING_FACTOR, FPR_CEILING_SLACK};
     let samples = corpus::load(&args.corpus, "dev")?;
     let det = Detector::new();
     let (ours, _) = our_system(&det, &samples);
@@ -1234,8 +1265,7 @@ fn cmd_gate(args: &Args) -> Result<(), String> {
                 }
             }
             // fit::targets is (High, Medium, Low); SENS is (Low, Medium, High)
-            let target = fit::targets(lo as u32)[2 - i];
-            let ceiling = FPR_CEILING_FACTOR * target + FPR_CEILING_SLACK;
+            let ceiling = fit::fpr_ceiling(lo as u32, 2 - i, det.packs().len());
             checked += 1;
             if c.fpr() > ceiling {
                 println!(
@@ -1248,9 +1278,10 @@ fn cmd_gate(args: &Args) -> Result<(), String> {
         }
     }
     println!(
-        "gate: {checked} checks ({} language files in {}; recall tolerance {RECALL_TOLERANCE}, junk FPR ceiling {FPR_CEILING_FACTOR} x target + {FPR_CEILING_SLACK}): {failures} failures",
+        "gate: {checked} checks ({} language files in {}; recall tolerance {RECALL_TOLERANCE}, junk FPR ceiling {FPR_CEILING_FACTOR} x target + {FPR_CEILING_SLACK} + {BUCKET_CONCENTRATION} x gate 2's rise for each of {} further packs): {failures} failures",
         files.len(),
-        dir.display()
+        dir.display(),
+        det.packs().len().saturating_sub(1)
     );
     if failures > 0 {
         return Err("accuracy gate failed".into());

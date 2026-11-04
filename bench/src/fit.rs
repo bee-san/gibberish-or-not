@@ -261,10 +261,27 @@ pub struct Targets {
 /// cause, as a share of all dev negatives, at High, Medium and Low.
 pub const GATE2_RISE: [f64; 3] = [0.0005, 0.0002, 0.0001];
 
+/// In budget mode a pack may spend in any one length bucket up to this many times its
+/// proportional share of gate 2's allowance there: `GATE2_RISE` times the bucket's dev
+/// negatives (all of them, as the CI gate counts). Under 10 characters that is up to 70% of
+/// the budget, where short phrases need it; and the CI gate's ceilings grow by the same
+/// amount per pack ([`fpr_ceiling`]), so packs that keep to their caps fit in any order.
+pub const BUCKET_CONCENTRATION: f64 = 4.0;
+
 /// The CI gate's per-bucket junk FPR ceiling (bench/src/main.rs `cmd_gate`):
-/// `FPR_CEILING_FACTOR * target + FPR_CEILING_SLACK`.
+/// `FPR_CEILING_FACTOR * target + FPR_CEILING_SLACK` with the base pack alone ([`fpr_ceiling`]).
 pub const FPR_CEILING_FACTOR: f64 = 1.5;
 pub const FPR_CEILING_SLACK: f64 = 0.0002;
+
+/// The CI gate's junk FPR ceiling for the bucket starting at `chars_lo` characters, at
+/// sensitivity `i` (0 High, 1 Medium, 2 Low, as [`targets`]), with `packs` packs built in:
+/// the base pack's targets with some slack, plus each further pack's largest allowed spend
+/// in one bucket (`BUCKET_CONCENTRATION` times its share of gate 2's allowance).
+pub fn fpr_ceiling(chars_lo: u32, i: usize, packs: usize) -> f64 {
+    FPR_CEILING_FACTOR * targets(chars_lo)[i]
+        + FPR_CEILING_SLACK
+        + packs.saturating_sub(1) as f64 * BUCKET_CONCENTRATION * GATE2_RISE[i]
+}
 
 /// Negatives above a threshold below which the empirical quantile is used; with fewer, the
 /// tail is modelled.
@@ -350,27 +367,29 @@ fn cost(sorted_neg: &[f64], t: f64, conservative: bool) -> f64 {
     }
 }
 
-/// [`allocate`] with optional per-bucket caps (expected false positives) and the
-/// conservative cost.
+/// [`allocate`] with optional per-bucket caps on the false positives **seen on dev** (what
+/// the CI gate counts) and the conservative cost. A cap under one false positive (Low at
+/// 200+ characters) still lets a bucket accept the positives above all its negatives.
 fn allocate_with(
     buckets: &[(Vec<f64>, Vec<f64>)],
     budget: f64,
     caps: Option<&[f64]>,
     conservative: bool,
 ) -> Vec<f64> {
-    // Per bucket: the k-th step accepts the k best positives
-    let steps: Vec<Vec<(f64, f64)>> = buckets
+    // Per bucket: the k-th step accepts the k best positives: (threshold, cost, seen)
+    let steps: Vec<Vec<(f64, f64, usize)>> = buckets
         .iter()
         .map(|(pos, neg)| {
             let mut p: Vec<f64> = pos.clone();
             p.sort_by(|a, b| b.total_cmp(a));
-            let mut v = vec![(f64::INFINITY, 0.0)];
+            let mut v = vec![(f64::INFINITY, 0.0, 0usize)];
             for (k, &t) in p.iter().enumerate() {
                 // ties: only the last of equal logits is a step
                 if p.get(k + 1).is_some_and(|&next| next == t) {
                     continue;
                 }
-                v.push((t, cost(neg, t, conservative)));
+                let seen = neg.len() - neg.partition_point(|&z| z < t);
+                v.push((t, cost(neg, t, conservative), seen));
             }
             v
         })
@@ -380,7 +399,10 @@ fn allocate_with(
         .iter()
         .enumerate()
         .map(|(b, v)| match caps {
-            Some(c) => v.iter().rposition(|&(_, fp)| fp <= c[b]).unwrap_or(0),
+            Some(c) => v
+                .iter()
+                .rposition(|&(_, _, seen)| seen as f64 <= c[b])
+                .unwrap_or(0),
             None => v.len() - 1,
         })
         .collect();
@@ -399,6 +421,11 @@ fn allocate_with(
             let p0 = pos_at(k0);
             for k in k0 + 1..=last[b] {
                 let cost = (v[k].1 - fp0).max(1e-9);
+                // Only steps the rest of the budget pays for: a dear step in one bucket
+                // doesn't stop the cheaper ones of the others
+                if spent + cost > budget {
+                    continue;
+                }
                 let ratio = (pos_at(k) - p0) as f64 / cost;
                 if best.is_none_or(|(r, _, _, _)| ratio > r) {
                     best = Some((ratio, b, k, cost));
@@ -406,9 +433,6 @@ fn allocate_with(
             }
         }
         let Some((_, b, k, cost)) = best else { break };
-        if spent + cost > budget {
-            break;
-        }
         spent += cost;
         at[b] = k;
     }
@@ -578,12 +602,18 @@ fn budget_thresholds(
     }
     assert_eq!(taken.len(), dv.len());
     let n_all = dv.iter().filter(|(_, y, _)| !y).count();
+    // Every dev negative per bucket, whether this pack scores it or not: what the CI gate's
+    // ceilings count (a pack for one script scores a small share of them)
+    let mut bucket_neg = vec![0usize; BUCKETS.len()];
+    for s in dev_samples.iter().filter(|s| s.label == Label::Neg) {
+        bucket_neg[bucket_of(s.chars() as u32)] += 1;
+    }
     for i in 0..3 {
         let budget = GATE2_RISE[i] * n_all as f64 * targets.scale;
         // Per bucket: positives, and the negatives not already taken by the other packs
         let mut pairs: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
         let mut caps: Vec<f64> = Vec::new();
-        for (b, &lo) in BUCKETS.iter().enumerate() {
+        for b in 0..BUCKETS.len() {
             let w = &dev[b].w;
             let in_b = |e: &&Example| bucket_of(e.chars) == b;
             let mut neg: Vec<f64> = dv
@@ -596,7 +626,12 @@ fn budget_thresholds(
                 .collect();
             neg.sort_by(f64::total_cmp);
             pairs.push((dev[b].pos.clone(), neg));
-            caps.push(self::targets(lo)[i] * targets.scale.max(1.0) * dev[b].neg_total as f64);
+            caps.push(
+                BUCKET_CONCENTRATION
+                    * GATE2_RISE[i]
+                    * targets.scale.max(1.0)
+                    * bucket_neg[b] as f64,
+            );
         }
         let t = allocate_with(&pairs, budget, Some(&caps), true);
         let mut new_fp = 0usize;
@@ -889,4 +924,55 @@ pub fn fit(
         calibration: cal,
         lines,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 100 negatives from -10.0 to -0.1: enough that the tail model prices every threshold
+    fn many_negatives() -> Vec<f64> {
+        (1..=100).map(|i| -0.1 * i as f64).rev().collect()
+    }
+
+    #[test]
+    fn a_cap_under_one_still_takes_the_positives_above_every_negative() {
+        let buckets = vec![(vec![5.0, 6.0], many_negatives())];
+        // The tail model prices t = 5 above 0, but no dev negative is that high
+        assert!(cost(&buckets[0].1, 5.0, true) > 0.0);
+        let t = allocate_with(&buckets, 1.0, Some(&[0.0]), true);
+        assert!(t[0] <= 5.0, "threshold {} rejects the positives", t[0]);
+    }
+
+    #[test]
+    fn caps_count_the_false_positives_seen_on_dev() {
+        // Positives at 0.5 and 1.5; negatives at 1.0 and 2.0 (costs are counts: few negatives)
+        let buckets = vec![(vec![0.5, 1.5, 2.5], vec![1.0, 2.0])];
+        let t = allocate_with(&buckets, 10.0, Some(&[1.0]), true);
+        let seen = buckets[0].1.iter().filter(|&&z| z >= t[0]).count();
+        assert_eq!(seen, 1);
+        assert!(t[0] <= 1.5 && t[0] > 1.0);
+    }
+
+    #[test]
+    fn a_dear_step_does_not_stop_cheaper_ones() {
+        // Bucket 0: 10 positives for 5 false positives (the best ratio, over the budget);
+        // bucket 1: 1 positive for 1 false positive
+        let buckets = vec![(vec![0.5; 10], vec![1.0; 5]), (vec![0.5], vec![1.0])];
+        let t = allocate_with(&buckets, 3.0, None, false);
+        assert!(t[0] > 1.0, "bucket 0 can't be afforded");
+        assert!(t[1] <= 0.5, "bucket 1 fits the budget: threshold {}", t[1]);
+    }
+
+    #[test]
+    fn ceilings_grow_with_each_further_pack() {
+        for lo in BUCKETS {
+            for i in 0..3 {
+                let base = FPR_CEILING_FACTOR * targets(lo)[i] + FPR_CEILING_SLACK;
+                assert_eq!(fpr_ceiling(lo, i, 1), base);
+                let more = fpr_ceiling(lo, i, 3) - base;
+                assert!((more - 2.0 * BUCKET_CONCENTRATION * GATE2_RISE[i]).abs() < 1e-12);
+            }
+        }
+    }
 }

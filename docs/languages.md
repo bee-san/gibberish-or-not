@@ -189,11 +189,19 @@ default for every language but `en`). Per sensitivity, gate 2's allowance (below
 0.02 and 0.05 points of the dev split's negatives at Low, Medium and High: about 7, 14 and
 35 false positives on corpus v1) is one budget for all length buckets, spent where it buys
 the most of your language's dev recall. Junk that the packs already built in accept at
-that sensitivity costs nothing: it is a false positive already. Each bucket can spend at
-most its share under the per-bucket targets of `bench/src/fit.rs` (so the CI gate's
-ceilings hold), and a candidate threshold costs the larger of the false positives seen on
-dev and the tail model's estimate. `fit` prints, per sensitivity, how many new dev false
-positives the pack makes against the budget, a split-half check of it, and your dev recall.
+that sensitivity costs nothing: it is a false positive already. A candidate threshold costs
+the larger of the false positives seen on dev and the tail model's estimate, and the budget
+buys the thresholds with the most recall per false positive for as long as it lasts.
+
+In one length bucket a pack may make at most 4 times its proportional share of the budget
+in false positives seen on dev (`BUCKET_CONCENTRATION` in `bench/src/fit.rs`: 4 × gate 2's
+allowance × the bucket's dev negatives, of every script, as the CI gate counts them). That
+allows up to 70% of the budget under 10 characters, where short phrases need it. The CI
+gate's per-bucket ceilings grow by the same amount for each pack after English (gate 2), so
+packs that keep to their caps pass it in whatever order they land. A bucket whose cap is
+under one false positive (Low at 200+ characters) still accepts the positives above all of
+its negatives. `fit` prints, per sensitivity, how many new dev false positives the pack
+makes against the budget, a split-half check of it, and your dev recall.
 
 Build your pack with every pack already on main compiled in, and refit after rebasing
 onto a main that gained a language. `--fpr-scale` multiplies the budget (default 1).
@@ -202,11 +210,15 @@ Leave it at 1 unless your measurements say otherwise, and say why in your README
 English, the base pack, uses `--mode targets`: each bucket at its own targets, which
 define the shared per-bucket budget.
 
-Measured on the Spanish pilot pack (en + es on dev, before the pilot's own tuning): the
-old per-bucket targets spent most of gate 2's budget in buckets of 20+ characters, where
-Spanish recall was already 100%, and left a High recall of 91.7% within the budget. The
-budget mode spends 25 of 35 false positives at High, 9 of 14 at Medium and 4 of 7 at Low,
-with Spanish dev recall at 97.7%, 97.3% and 90.4%.
+Measured on the pilots' packs (dev, each with English only). Per-bucket targets spent most
+of gate 2's budget in buckets of 20+ characters, where Spanish recall was already 100%,
+and left a Spanish High recall of 91.7%. The first budget mode capped each bucket by the
+targets and by the negatives the pack itself scores; on the pilots' packs of 2026-11-04
+20:10Z it gave High / Medium / Low dev recall of 97.9% / 97.5% / 91.5% for Spanish (every
+paragraph rejected at Low) and 77.3% / 74.9% / 67.9% for Japanese, which spent 9 of 35, 6
+of 14 and 2 of 7 false positives. With the caps above, on the same packs: Spanish 98.5% /
+97.5% / 96.2% for 21 / 10 / 5 new dev false positives, Japanese 94.0% / 87.8% / 83.6% for
+30 / 10 / 2, and English's calibration unchanged. en + es + ja together pass the CI gate.
 
 Run the test split **once**, when your model is final, for the numbers in your PR (and
 say so; if you must run it again, say how many times and what changed in between):
@@ -219,11 +231,19 @@ unless it says test; put each table in your PR and README.
 
 1. **Recall** of your language's positives (test split, all categories together):
    Low >= 80%, Medium >= 90%, High >= 92%; sentences (category `sentence`) at Medium >= 95%.
+   For Chinese and Japanese the overall figures leave out the `phrase` category, which has
+   its own floor: phrases at High >= 60%. Their phrases are cuts of 2-8 characters at
+   random positions, not whole words as in the other languages, and the junk made from
+   them is often real text: 79% of the reversed 2-character Japanese cuts in dev occur 10
+   or more times in the Japanese pilot's training text. `gib-bench` prints both figures
+   ("Chinese and Japanese without phrases").
 2. **Shared junk FPR**: your pack raises the junk false-positive rate of all negatives (all
    languages' junk and the noise) by at most **0.01 percentage points at Low, 0.02 at
    Medium, 0.05 at High** (dev, overall), compared with the same detector without it
    (`gib-bench --langs <every other language>` against `gib-bench`), and `gib-bench gate`
-   passes: its per-bucket FPR ceilings are the budget all languages share.
+   passes. Its per-bucket FPR ceilings are 1.5 × English's targets + 0.02 points, plus,
+   for each pack after English, 4 × gate 2's allowance (0.04, 0.08 and 0.2 points at Low,
+   Medium and High): the most that budget mode lets one pack spend in a bucket.
 3. **Your own junk**: the FPR of the negatives derived from your language at Medium <= 1%.
 4. **Confusion**: of your positives accepted at High, >= 90% are reported as your language;
    no other language's positives are reported as yours more than 3% of the time, and the
