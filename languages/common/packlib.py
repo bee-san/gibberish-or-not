@@ -96,7 +96,7 @@ def inside(root, rel):
 
 def gutenberg_body(path):
     """A Project Gutenberg book without its header and licence footer."""
-    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR: callers pass inside(cache, ...) paths
+    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR - callers pass inside(cache, ...) paths
         text = f.read().replace("\r\n", "\n")
     start = re.search(r"^\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG.*$", text, re.M | re.I)
     if start:
@@ -355,8 +355,8 @@ def word_table(classes, load=0.92, seed=0):
                     buckets[x2].append(cur)
                     placed = True
                     break
-                tgt = x1 if rng.random() < 0.5 else x2  # NOSONAR: deterministic cuckoo eviction
-                j = rng.randrange(8)  # NOSONAR: see above
+                tgt = x1 if rng.random() < 0.5 else x2  # NOSONAR - deterministic cuckoo eviction
+                j = rng.randrange(8)  # NOSONAR - see above
                 victim = buckets[tgt][j]
                 buckets[tgt][j] = cur
                 ve, v1, v2 = victim

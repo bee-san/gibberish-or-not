@@ -202,7 +202,7 @@ def inside(root, rel):
 
 def gutenberg_body(path):
     """A Project Gutenberg book without its header and licence footer."""
-    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR: callers pass inside(cache, ...) paths
+    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR - callers pass inside(cache, ...) paths
         text = f.read().replace("\r\n", "\n")
     start = re.search(r"^\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG.*$", text, re.M | re.I)
     if start:
@@ -291,7 +291,7 @@ def wiki_rows(cache, lang):
     path = inside(cache, os.path.join("wikipedia-intros-20261104", f"{lang}.jsonl"))
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as f:  # NOSONAR: path = inside(cache, ...)
+    with open(path, encoding="utf-8") as f:  # NOSONAR - path = inside(cache, ...)
         return [json.loads(l) for l in f if l.strip()]
 
 

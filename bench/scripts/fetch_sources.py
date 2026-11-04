@@ -93,7 +93,7 @@ def inside(root, rel):
 
 def sha256_file(path):
     h = hashlib.sha256()
-    with open(path, "rb") as f:  # NOSONAR: callers pass inside(cache, ...) paths
+    with open(path, "rb") as f:  # NOSONAR - callers pass inside(cache, ...) paths
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -140,11 +140,11 @@ def fetch(cache, manifest, rel, url, licence, note=""):
                                       "licence": licence, "note": note}
         return path
     data, headers = http_get(url)
-    os.makedirs(os.path.dirname(path), exist_ok=True)  # NOSONAR: path = inside(cache, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)  # NOSONAR - path = inside(cache, rel)
     tmp = path + f".tmp{os.getpid()}"
-    with open(tmp, "wb") as f:  # NOSONAR: inside the cache, see above
+    with open(tmp, "wb") as f:  # NOSONAR - inside the cache, see above
         f.write(data)
-    os.rename(tmp, path)  # NOSONAR: inside the cache, see above
+    os.rename(tmp, path)  # NOSONAR - inside the cache, see above
     digest = hashlib.sha256(data).hexdigest()
     if entry and entry["sha256"] != digest:
         sys.exit(f"{url}: downloaded sha256 {digest} differs from the manifest's {entry['sha256']}")
@@ -158,7 +158,7 @@ def fetch(cache, manifest, rel, url, licence, note=""):
 def pick_books(catalog_path, lang, k):
     """k books in `lang` only, Type Text, no dictionaries or language textbooks, by fixed seed."""
     ids = []
-    with open(catalog_path, newline="", encoding="utf-8") as f:  # NOSONAR: from fetch(), inside the cache
+    with open(catalog_path, newline="", encoding="utf-8") as f:  # NOSONAR - from fetch(), inside the cache
         for r in csv.DictReader(f):
             if r["Type"] != "Text" or r["Language"].strip() != lang:
                 continue
@@ -168,8 +168,8 @@ def pick_books(catalog_path, lang, k):
                 continue
             ids.append(int(r["Text#"]))
     ids.sort()
-    rng = random.Random(f"gon-v1-gutenberg-{lang}")  # NOSONAR: fixed seed for a reproducible sample, not security
-    return sorted(rng.sample(ids, min(k, len(ids))))  # NOSONAR: see above
+    rng = random.Random(f"gon-v1-gutenberg-{lang}")  # NOSONAR - fixed seed for a reproducible sample, not security
+    return sorted(rng.sample(ids, min(k, len(ids))))  # NOSONAR - see above
 
 
 def wiki_intros(cache, manifest, lang):
@@ -194,12 +194,12 @@ def wiki_intros(cache, manifest, lang):
                          "title": p["title"], "text": text})
         time.sleep(1)
     rows = rows[:WIKI_PAGES]
-    os.makedirs(os.path.dirname(path), exist_ok=True)  # NOSONAR: path = inside(cache, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)  # NOSONAR - path = inside(cache, rel)
     tmp = path + f".tmp{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR: inside the cache, see above
+    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR - inside the cache, see above
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    os.rename(tmp, path)  # NOSONAR: inside the cache, see above
+    os.rename(tmp, path)  # NOSONAR - inside the cache, see above
     return fetch(cache, manifest, rel,
                  f"https://{lang}.wikipedia.org/w/api.php (generator=random, prop=extracts, exintro)",
                  "CC BY-SA 4.0 (evaluation only)", "random article introductions; re-fetch by revid")
@@ -246,7 +246,7 @@ def main():
                         continue
                     # A few Gutenberg ebooks are copyrighted ("This is a COPYRIGHTED Project
                     # Gutenberg eBook"): never used, for shipping or for evaluation
-                    with open(path, "rb") as f:  # NOSONAR: path from fetch(), inside the cache
+                    with open(path, "rb") as f:  # NOSONAR - path from fetch(), inside the cache
                         head = f.read(8000)
                     if COPYRIGHTED in head:
                         missing.append(n)

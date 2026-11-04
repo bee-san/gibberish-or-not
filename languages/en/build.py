@@ -71,8 +71,8 @@ def main():
     before = len(tat)
     tat = [t for t in tat if packlib.letters_key(t) not in heldout]
     dropped_heldout = before - len(tat)
-    rng = random.Random("gon-en-tatoeba")  # NOSONAR: fixed seed for a reproducible sample, not security
-    tat = rng.sample(tat, min(TATOEBA_SENTENCES, len(tat)))  # NOSONAR: see above
+    rng = random.Random("gon-en-tatoeba")  # NOSONAR - fixed seed for a reproducible sample, not security
+    tat = rng.sample(tat, min(TATOEBA_SENTENCES, len(tat)))  # NOSONAR - see above
     for i, t in enumerate(tat):
         # Tatoeba sentences as pseudo-sources of 10,000 sentences each
         texts.append((f"tatoeba:{i // 10_000}", t))
@@ -131,7 +131,7 @@ def main():
     classes = packlib.word_classes(keep, tokens, MAX_WORDS)
     rel = "gutenberg/3201/crosswd.txt"
     inputs.append((rel, sources["files"][rel]["sha256"]))
-    with open(packlib.inside(args.cache, rel), encoding="latin-1") as f:  # NOSONAR: inside the cache
+    with open(packlib.inside(args.cache, rel), encoding="latin-1") as f:  # NOSONAR - inside the cache
         spelling = sorted({w.strip().lower() for w in f if w.strip().isalpha() and w.strip().isascii()})
     for w in spelling:
         if len(classes) >= MAX_WORDS:
