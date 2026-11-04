@@ -157,14 +157,47 @@ reader (`src/pack.rs`), and custom packs load at run time (`Pack::from_bytes`). 
 a `build.rs` that discovers `languages/*/` (implicit, and a stray directory would ship),
 per-language Rust modules (12 PRs editing shared code).
 
-**Top 3 by n-gram rank, within 0.3 of the best, then the full model**, not every pack:
-with 9 Latin-script languages, scoring all of them is 3× the time. The n-gram rank puts a
-text's own language first; the 3 best keep close languages (Spanish, Portuguese, Italian)
-in the running; texts under 12 letters, where ranks are noisy, get all packs. Every pack
-that is scored computes exactly the features `gib-bench fit` calibrated it on: an earlier
-version let only near-best packs segment long tokens, and the first pilot pack (es) showed
-that this broke English's calibration (English recall at 10–19 characters fell when es was
-added).
+**Many languages: a cheap first look, then full scoring of few packs, in rank order.**
+Ciphey checks thousands of candidates per search, mostly junk, so the target is for all
+13 languages together: p50 ≤ 3 µs and p99 ≤ 30 µs (docs/languages.md, gate 5). With 13
+packs, scoring every candidate in full took 4.0–4.2 µs at p50 and 44–48 µs at p99 at load
+52 (13 stand-in packs on dev: the en, es and ja pilot packs and 10 built from Tatoeba for
+the measurement only). For a text of 12 or more letters:
+
+1. **Pre-rank**: each pack's order-2 model over the text's first 32 letters, minus what
+   the pack's own language scores on average (computed from its tables at load). About
+   75 ns per pack. Without the centring, packs of other alphabets and orders outrank
+   English on English text: among 13 packs, English Medium recall fell from 98.7% to
+   89.6% when only the best 3 by the raw value were scored.
+2. **Pre-gate**: a pack whose pre-rank is below its `pregate` (written by `fit` in budget
+   mode: every train and dev positive's pre-rank, minus 0.3) is out before its full n-gram
+   pass.
+3. Only the best 2 by pre-rank, and the others within 0.3 of the best (5 at most), get the
+   full n-gram pass; then the best 3 by n-gram rank within 0.3 of the best are candidates,
+   as before.
+4. **In rank order**, until one scores 0.9 (the text is then language at every
+   sensitivity), scores under 0.01, or is under its n-gram gate (`fit` in budget mode adds
+   a gate per length bucket: longer texts fit their language better than the shortest
+   positives that set the one gate).
+
+Texts under 12 letters skip steps 1–3 and the last two stops (their ranks are noisy, and
+they are cheap). Every pack that is scored computes exactly the features `gib-bench fit`
+calibrated it on: an earlier version let only near-best packs segment long tokens, and
+the first pilot pack (es) showed that this broke English's calibration. The word table
+also gets a fingerprint filter at load, so that most lookups of words that aren't there
+(segmentation tries many) stop without reading the table: English alone went from 16–18
+to 11–13 µs at p99 with the same output on every dev and test text.
+
+On the same 13 packs, the staged scoring takes 2.8–3.0 µs and 18–21 µs. No English dev
+positive loses its verdict when the es or the ja pilot pack is built in (with es, 5 more
+pass at Low). Options that lost (recall at Medium, replaying the 13 packs' dev scores
+unless it says otherwise): an upper bound on each pack's score from the features known
+before the word model (sound, but too loose: the best possible word features leave 13–18
+logits of slack on junk, so almost nothing exits early); scoring only the best-ranked pack
+(with es: English loses 0.7 points), or candidates within 0.05 of the best rank (0.2–0.3
+points, measured by the es pilot; gate 4 allows 0.2); 3 full passes at most (Italian loses
+0.35 points, Spanish 0.21); scoring at most 4 or 5 packs of a short text (English loses
+0.8 or 0.2 points); a pre-rank over 16 or 24 letters (up to 0.4 or 0.15 points).
 
 **The CLI has no dependencies** (feature `cli`), instead of clap: the library pulls in
 nothing for it.

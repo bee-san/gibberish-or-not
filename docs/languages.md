@@ -93,12 +93,12 @@ build. A pack has:
   with `packlib`: a worked example of the hashed path.
 
 `calibration.txt` is written by `gib-bench fit` (don't edit it by hand): the n-gram gate,
-and per length bucket (characters of the text without identifiers) the logistic weights of
-the 22 features and the five anchors that map the logit to the score.
+the pre-gate, and per length bucket (characters of the text without identifiers) the
+logistic weights of the 22 features, the five anchors that map the logit to the score, and
+the bucket's own n-gram gate.
 
 Every pack that is scored computes the same features as `fit` used, whatever the other
-packs: the detector scores the (at most 3) packs of the text's script whose n-gram rank is
-within 0.3 of the best, each in full.
+packs (next section).
 
 ## Data and licences
 
@@ -143,12 +143,17 @@ within 0.3 of the best, each in full.
 ## How detection works with many languages
 
 For a text, the language-independent pass finds its words, identifiers (neutral) and
-shape; the text's majority script picks the candidate packs. Every candidate runs its
-n-gram pass; a pack whose n-gram rank is below its calibrated gate drops out. Of the rest,
-the **3 best-ranked** that are within 0.3 of the best rank (all of them for texts under 12
-letters) get the word model and the classifier, each in full. The best
-calibrated score wins (ties by the logit's margin above the Low anchor), and `is_language`
-is that score against the sensitivity's threshold (0.9, 0.75, 0.5).
+shape; the text's majority script picks the candidate packs. For a text of 12 or more
+letters, a cheap pre-rank (each pack's order-2 model over the first 32 letters, centred on
+its own language's average) drops the packs under their pre-gate and keeps the best 2,
+and the others within 0.3 of the best (5 at most), for the full n-gram pass. Of those, the
+3 best by n-gram rank within 0.3 of the best are candidates (texts under 12 letters: every
+pack). Candidates get the word model and the classifier, each in full, **in rank order**:
+scoring stops at the first that scores 0.9 or more, and, for 12 or more letters, at the
+first that scores under 0.01 or is under its n-gram gate (for shorter texts, a gated pack
+is skipped). The best calibrated score wins (ties by the logit's margin above the Low
+anchor), and `is_language` is that score against the sensitivity's threshold (0.9, 0.75,
+0.5). docs/design.md ("Many languages") has the measurements behind each step.
 
 So a pack can only add acceptances: it never makes another language's text gibberish, but
 everything its classifier accepts among the junk is a false positive for the whole
@@ -158,7 +163,10 @@ the gates below are about the shared junk false-positive rate.
 The rank is the mean log10 P per letter plus log10 of the alphabet size (a uniform model
 scores 0), with foreign letters at -3. Packs of one script compete on it: a pack whose
 n-gram model fits its own language well ranks first on it, and that is what lets it get
-the full scoring.
+the full scoring. Ranking first also means deciding: of a long text, a pack that ranks
+first and rejects it (under 0.01, or gated) stops the packs after it. That is how adding a
+pack can lower the shared false-positive rate (es: junk derived from Spanish that English
+used to accept), and why gate 4 checks that no other language loses recall.
 
 ## The benchmark slice
 
@@ -201,7 +209,11 @@ gate's per-bucket ceilings grow by the same amount for each pack after English (
 packs that keep to their caps pass it in whatever order they land. A bucket whose cap is
 under one false positive (Low at 200+ characters) still accepts the positives above all of
 its negatives. `fit` prints, per sensitivity, how many new dev false positives the pack
-makes against the budget, a split-half check of it, and your dev recall.
+makes against the budget, a split-half check of it, and your dev recall. Budget mode also
+writes the gates that keep junk cheap: a `pregate` (below every train and dev positive of
+12 or more letters by 0.3 in pre-rank) and an n-gram gate per length bucket with at least
+20 positives (below its lowest, by 0.3). No train or dev positive of yours is under them,
+by construction.
 
 Build your pack with every pack already on main compiled in, and refit after rebasing
 onto a main that gained a language. `--fpr-scale` multiplies the budget (default 1).
@@ -254,9 +266,15 @@ unless it says test; put each table in your PR and README.
    Portuguese text from es, and es must not keep winning it. If the later pack can't win
    on the n-gram score alone, the two agents fix it together in the later PR (ciphey-lead,
    2026-11-04).
-5. **Latency** (`gib-bench latency`, all languages, same host, back to back with main): p50
-   rises by at most 0.3 µs and p99 by at most 3 µs, and with all languages p50 <= 3 µs and
-   p99 <= 30 µs for inputs of up to 256 characters.
+5. **Latency**: the overall budget holds with every pack on main plus yours: p50 <= 3 µs and
+   p99 <= 30 µs for inputs of up to 256 characters (`gib-bench latency --check`, dev split,
+   native), measured back to back with main on the same host (run main's too, and give
+   the host load). This replaces a per-pack increment: Ciphey checks thousands of
+   candidates per search, mostly junk, so the budget is for all languages together
+   (ciphey-lead, 2026-11-04). The framework's own check is `gib-bench latency --synthetic
+   12 --check` (13 packs). If the budget fails with your pack while main's own numbers and
+   your pack's costs look ordinary, that is the framework's problem: set `NEED_LEAD` with
+   both runs.
 6. **Size** within the budget; `cargo build --lib --target wasm32-unknown-unknown` works.
 7. **CI** green: fmt, clippy, tests (yours included), wasm, gate, size.
 

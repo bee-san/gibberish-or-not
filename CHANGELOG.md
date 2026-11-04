@@ -29,7 +29,9 @@ WASM-ready. Upgrading: MIGRATION.md.
 - A calibrated score: 0.5, 0.75 and 0.9 are the High, Medium and Low thresholds, at
   documented junk false-positive rates in every length bucket.
 - Language packs, one Cargo feature each (`en` ... `ko`, all on by default): English in
-  6.0.0; the other 12 languages land in 6.x under docs/languages.md.
+  6.0.0; the other 12 languages land in 6.x under docs/languages.md. With many packs, a
+  cheap pre-rank and per-pack gates choose the few that are scored in full, in rank order
+  (docs/design.md, "Many languages").
 - `no_std` + `alloc` core, `wasm32-unknown-unknown` with default features, JavaScript
   bindings (feature `wasm`: `detect`, `score`, `isGibberish`, `isPassword`, `languages`).
 - The benchmark: corpus v1 (bench/corpus/v1, 53,531 positives in 13 languages, 232,349

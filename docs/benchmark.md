@@ -198,30 +198,39 @@ are rejected (under 1%). When a language's pack ships, its text gets its own lan
 
 | | p50 | p99 | mean |
 |---|---:|---:|---:|
-| **gibberish-or-not 6, native** (any sensitivity: one score) | **1.0 µs** | **16.3 µs** | 2.2 µs |
-| junk only / language only | 865 ns / 2.3 µs | 11.1 µs / 22.4 µs | 1.8 µs / 3.9 µs |
-| **wasm32-unknown-unknown under node 24** (wasm-bindgen `score()`, string passing included) | 1.5 µs | 27.6 µs | 2.8 µs |
-| **wasm32-wasip1 under wasmtime 50** | 2.4 µs | 24.0 µs | 3.6 µs |
+| **gibberish-or-not 6, native** (any sensitivity: one score) | **950 ns** | **11.5 µs** | 1.9 µs |
+| junk only / language only | 835 ns / 2.0 µs | 9.4 µs / 14.1 µs | 1.6 µs / 2.8 µs |
+| **wasm32-unknown-unknown under node 24** (wasm-bindgen `score()`, string passing included) | 1.5 µs | 21.3 µs | 2.4 µs |
+| **wasm32-wasip1 under wasmtime 50** | 2.3 µs | 17.5 µs | 3.2 µs |
 | 5.0.7 `is_gibberish` @Medium (measured when the baselines were frozen) | 5.6 µs | 39.4 µs | 7.8 µs |
 | Ciphey's English checker @Medium (same) | 810 ns | 19.1 µs | 1.7 µs |
 
-The host is shared: its load average was about 51 during this run and when the baselines
-were frozen, so absolute times can be several times lower on an idle machine. WASM is
-within 2.4× of native at p50 and 1.7× at p99. With the Spanish pilot pack added (two Latin
-packs), three alternating rounds gave 1.0 µs / 17.0–17.5 µs for English alone and 1.4 µs /
-26.1–27.6 µs for both, under the same load.
+The host is shared: its load average was 53–59 during these runs and about 51 when the
+baselines were frozen, so absolute times can be several times lower on an idle machine.
+WASM is within 2.4× of native at p50 and 1.9× at p99.
 
 The targets for all 13 languages are p50 ≤ 3 µs and p99 ≤ 30 µs (docs/languages.md, gate
-5). Scoring is linear in the number of candidate packs for the n-gram pass only: the word
-model runs for the 3 best-ranked packs of the text's script.
+5; how many packs are scored: docs/design.md, "Many languages"). Three alternating rounds
+at load 52–53, p50 / p99:
+
+| | before (b56b0c5) | now |
+|---|---|---|
+| English alone | 1.0 µs / 16.4–17.9 µs | 0.94–0.98 µs / 11.1–13.0 µs |
+| English + the Spanish pilot pack | 1.2–1.4 µs / 24.7–26.2 µs | 1.2 µs / 15.4–16.9 µs |
+| 13 packs: en, the es and ja pilots, 10 Tatoeba stand-ins (scratch) | 4.0–4.2 µs / 43.9–47.8 µs | 2.8–3.0 µs / 17.9–20.7 µs |
+
+`gib-bench latency --synthetic 12 --check` measures 13 packs anyone can rebuild: English
+and 12 made-up languages with the 13 languages' script split (8 Latin ones, English under
+a letter substitution each). At load 52 it gave 3.0–3.1 µs / 15.4–16.3 µs: the p99 holds
+with room, the p50 sits at the budget.
 
 ### Sizes
 
 | | size | budget |
 |---|---:|---:|
 | `languages/en/model.bin` + `calibration.txt` | 956 KB | 1 MB |
-| WASM module with every default language, `cargo build --release` | 1,288 KB | |
-| after `wasm-opt -Oz` | 1,241 KB | 5.5 MB for all 13 |
+| WASM module with every default language, `cargo build --release` | 1,304 KB | |
+| after `wasm-opt -Oz` | 1,254 KB | 5.5 MB for all 13 |
 
 Dependencies: `phf` (the password list) and `once_cell` (`race`, no_std): 12 crates in
 `cargo tree -e normal` (the proc-macro's build-time crates included), against 195 for 5.0.7.
@@ -302,4 +311,6 @@ its PR.
    quarters of a text, near-repetition junk in the corpus, glued identifiers neutral,
    the odd-case veto only for mostly-cased text, every scored pack computing its full
    features (and only packs within 0.3 of the best rank scored).
-6. The numbers above.
+6. The numbers above. Later framework changes (fit's budget mode, the staged scoring of
+   many packs, the word-table filter) leave every English verdict on dev and test as it
+   was (compared text by text), so the test split was not run again for them.

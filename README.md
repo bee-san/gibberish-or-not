@@ -64,8 +64,9 @@ has the tables, and how often the test split was looked at).
 Per length, kind of text and kind of junk, the speed, the sizes and how to reproduce every
 number: [docs/benchmark.md](docs/benchmark.md). In short:
 
-- **Speed**: median 1.0 µs and 99th percentile 16 µs per check (inputs up to 256
-  characters, on a shared busy host); WASM within 2.4× of native.
+- **Speed**: median 1.0 µs and 99th percentile 13 µs per check (inputs up to 256
+  characters, on a shared busy host); WASM within 2.4× of native. The budget for all 13
+  languages together is 3 µs and 30 µs.
 - **Size**: the English pack is 956 KB; the whole WASM module after `wasm-opt -Oz` is
   1.2 MB.
 - **5.x's BERT path** never loaded a model (bee-san/Ciphey#1031) and is gone, with its 96
