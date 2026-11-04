@@ -61,8 +61,9 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   (frequency classes of half a log10 step); tokens with apostrophes whole, then by parts;
   long unknown tokens (6+ letters without spaces, 10+ in spaced text) are split into words
   by Viterbi over the word table, unknown letters at `lambda` (English -2.0 per letter),
-  only if their n-gram score is plausible (≥ -1.45) and only within a budget of 64 letters
-  per text. Unknown or rare tokens of text that is otherwise mostly words are checked for
+  only if their n-gram score is plausible (≥ -1.45 for a 26-letter alphabet, the same rank
+  for other packs) and only within a budget of 64 letters per text. Runs of Han or kana
+  (no spaces) are segmented in windows of 48 characters, with their own budget of 128. Unknown or rare tokens of text that is otherwise mostly words are checked for
   being one letter off by one from a much more frequent word (`romethinf`, `shem`): the
   signature of a cipher key with one wrong letter.
 - **Features** (20, in `pack::FEATURES`): bias; n-gram mean; known-letter coverage; word

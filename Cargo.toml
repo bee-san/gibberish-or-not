@@ -14,6 +14,7 @@ categories = ["text-processing", "no-std", "wasm"]
 include = [
     "/src/**/*.rs",
     "/tests/*.rs",
+    "/tests/fixtures/*",
     "/languages/*/model.bin",
     "/languages/*/calibration.txt",
     "/languages/*/README.md",

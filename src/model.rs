@@ -15,6 +15,7 @@
 //! train split) is mapped piecewise-linearly to the calibrated score (anchors from the dev
 //! split, see `pack::Bucket`).
 
+use crate::lang::script;
 use crate::pack::{fnv1a, mix, Ngrams, Pack, FNV_OFFSET, N_FEATURES};
 use crate::text::Analysis;
 
@@ -26,8 +27,23 @@ const MAX_TOKEN_CHARS: usize = 48;
 const SEGMENT_BUDGET: u32 = 64;
 /// Tokens whose letters score below this mean log10 P per letter in the n-gram model are
 /// not split into words: they are far from the language, and splitting costs a word lookup
-/// per letter and word length.
+/// per letter and word length. The value is for an alphabet of 26 symbols; packs with
+/// another rank offset (`NgramPass::rank`) shift it by the difference, so that the gate
+/// sits at the same rank in every language.
 const SEGMENT_MIN_NGRAM: f32 = -1.45;
+
+/// The rank offset `SEGMENT_MIN_NGRAM` was set for (26 symbols).
+fn reference_rank_offset() -> f32 {
+    log10_int(26)
+}
+
+/// A run of Han or kana (no spaces between words) longer than this many characters is
+/// looked up and segmented in windows of this many characters.
+const CJK_WINDOW_CHARS: usize = MAX_TOKEN_CHARS;
+/// Han and kana characters segmented per text (their own budget: a run of them is a whole
+/// sentence, and their words are short, so a lookup per character and word length costs
+/// about what `SEGMENT_BUDGET` letters of an alphabetic script do).
+const CJK_SEGMENT_BUDGET: u32 = 128;
 /// At most this many unknown tokens per text are checked for being one letter off a word.
 const NEAR_MISS_TOKENS: usize = 8;
 /// ...and only when at least this share of the letters is in known words: the check is
@@ -71,19 +87,24 @@ pub(crate) struct NgramPass {
     pub foreign: u32,
 }
 
+/// The pack's rank offset (see [`NgramPass::rank`]).
+pub(crate) fn rank_offset(pack: &Pack) -> f32 {
+    if pack.rank_offset.is_finite() {
+        pack.rank_offset
+    } else {
+        match &pack.ngrams {
+            Ngrams::Dense { alpha, .. } => log10_int(u32::from(*alpha)),
+            Ngrams::Hashed { .. } => 0.0,
+        }
+    }
+}
+
 impl NgramPass {
     /// How well the text fits the pack's n-gram model, comparable across packs: mean
     /// log10 P per letter plus the pack's rank offset (by default log10 of the alphabet
     /// size, so that a uniform model scores 0), with each foreign letter at -3.
     pub fn rank(&self, pack: &Pack) -> f32 {
-        let per = if pack.rank_offset.is_finite() {
-            pack.rank_offset
-        } else {
-            match &pack.ngrams {
-                Ngrams::Dense { alpha, .. } => log10_int(u32::from(*alpha)),
-                Ngrams::Hashed { .. } => 0.0,
-            }
-        };
+        let per = rank_offset(pack);
         let n = (self.scored + self.foreign).max(1) as f32;
         (self.ng_sum + per * self.scored as f32 - 3.0 * self.foreign as f32) / n
     }
@@ -280,6 +301,7 @@ pub(crate) fn features_from(
     let mut last_chunk: Option<u16> = None;
     let mut ntoks = 0u32;
     let mut budget = if segment { SEGMENT_BUDGET } else { 0 };
+    let mut cjk_budget = if segment { CJK_SEGMENT_BUDGET } else { 0 };
     let (mut unknown_tokens, mut unknown_lower) = (0u32, 0u32);
     // Tokens to check for being one letter off a word, with their own log10 P (or None)
     let mut suspects = [(0usize, f32::NEG_INFINITY); NEAR_MISS_TOKENS];
@@ -304,7 +326,13 @@ pub(crate) fn features_from(
             continue;
         }
         let word = &text[t.start as usize..t.end as usize];
-        let w = word_evidence(pack, word, t.apostrophe, spaced_text, &mut budget);
+        let w = if t.script & (script::HAN | script::KANA) != 0
+            && usize::from(t.letters) > CJK_WINDOW_CHARS
+        {
+            cjk_windows(pack, word, &mut cjk_budget)
+        } else {
+            word_evidence(pack, word, t.apostrophe, spaced_text, &mut budget)
+        };
         wsum += w.logp;
         let k = w.known.min(letters_here);
         known += k;
@@ -471,6 +499,32 @@ pub(crate) fn word_logp(pack: &Pack, word: &str) -> Option<f32> {
     pack.word_logp(mix(fnv1a(FNV_OFFSET, &buf[..len])))
 }
 
+/// Word evidence of a long run of Han or kana, window by window (a window may cut a word:
+/// at most one per window).
+fn cjk_windows(pack: &Pack, word: &str, budget: &mut u32) -> WordEvidence {
+    let mut out = WordEvidence {
+        logp: 0.0,
+        known: 0,
+        whole: None,
+    };
+    let mut start = 0usize;
+    let mut chars = 0usize;
+    for (i, _) in word.char_indices() {
+        if chars == CJK_WINDOW_CHARS {
+            let w = word_evidence(pack, &word[start..i], false, false, budget);
+            out.logp += w.logp;
+            out.known += w.known;
+            start = i;
+            chars = 0;
+        }
+        chars += 1;
+    }
+    let w = word_evidence(pack, &word[start..], false, false, budget);
+    out.logp += w.logp;
+    out.known += w.known;
+    out
+}
+
 /// What the word model says about one token.
 struct WordEvidence {
     /// log10 score: the word's, or its best split's, or `lambda` per letter.
@@ -538,7 +592,8 @@ fn word_evidence(
     } else {
         u32::from(pack.seg_min_letters.max(2))
     };
-    if letters >= min && letters <= *budget && token_ngram(pack, word) >= SEGMENT_MIN_NGRAM {
+    let gate = SEGMENT_MIN_NGRAM - (rank_offset(pack) - reference_rank_offset());
+    if letters >= min && letters <= *budget && token_ngram(pack, word) >= gate {
         *budget -= letters;
         let (lp, k) = segment(pack, &buf, &bounds, chars);
         if !spaced || k >= letters {

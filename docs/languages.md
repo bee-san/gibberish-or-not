@@ -86,7 +86,11 @@ build. A pack has:
   overrides), `’` as `'`, no combining marks. Tokens with apostrophes are looked up whole,
   then as their parts (French `l'aube` -> `l` + `aube`: put `l` in the list). Space-less
   text and long tokens are split into words (Viterbi), so a word list helps Chinese and
-  Japanese too.
+  Japanese too: a run of Han or kana is one token, segmented in windows of 48 characters,
+  up to 128 characters per text. The segmentation is skipped for tokens whose n-gram rank
+  is far below the language (a fixed rank, the same for every pack: set `rank_offset` for
+  hashed models). `tests/fixtures/make_hashed_fixture.py` builds a tiny hashed Han pack
+  with `packlib`: a worked example of the hashed path.
 
 `calibration.txt` is written by `gib-bench fit` (don't edit it by hand): the n-gram gate,
 and per length bucket (characters) the logistic weights of the 20 features and the five
