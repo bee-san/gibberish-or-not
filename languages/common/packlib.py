@@ -84,9 +84,19 @@ def words_of(text, case_overrides=None):
     return out
 
 
+def inside(root, rel):
+    """`rel` (a path from a build script's own lists or the sources manifest) joined to
+    `root`, refusing anything that resolves outside `root` (an absolute path, `..`)."""
+    base = os.path.realpath(root)
+    path = os.path.realpath(os.path.join(base, rel))
+    if os.path.commonpath([base, path]) != base:
+        raise ValueError(f"{rel!r} is outside {base}")
+    return path
+
+
 def gutenberg_body(path):
     """A Project Gutenberg book without its header and licence footer."""
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR: callers pass inside(cache, ...) paths
         text = f.read().replace("\r\n", "\n")
     start = re.search(r"^\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG.*$", text, re.M | re.I)
     if start:
@@ -142,7 +152,7 @@ def tatoeba_train_texts(cache, iso3):
     """Sentences of the Tatoeba contributors in the train split."""
     import bz2
 
-    path = os.path.join(cache, "tatoeba-20261031", f"{iso3}_sentences_detailed.tsv.bz2")
+    path = inside(cache, os.path.join("tatoeba-20261031", f"{iso3}_sentences_detailed.tsv.bz2"))
     out = []
     with bz2.open(path, "rt", encoding="utf-8") as f:
         for line in f:
@@ -326,7 +336,8 @@ def word_table(classes, load=0.92, seed=0):
     n_buckets = max(1, math.ceil(len(words) / (8 * load)))
     while True:
         buckets = [[] for _ in range(n_buckets)]
-        rng = random.Random(seed)
+        # Fixed seed: the table must be reproducible byte for byte; not security
+        rng = random.Random(seed)  # NOSONAR
         ok = True
         for w in words:
             h = word_hash(w)
@@ -344,8 +355,8 @@ def word_table(classes, load=0.92, seed=0):
                     buckets[x2].append(cur)
                     placed = True
                     break
-                tgt = x1 if rng.random() < 0.5 else x2
-                j = rng.randrange(8)
+                tgt = x1 if rng.random() < 0.5 else x2  # NOSONAR: deterministic cuckoo eviction
+                j = rng.randrange(8)  # NOSONAR: see above
                 victim = buckets[tgt][j]
                 buckets[tgt][j] = cur
                 ve, v1, v2 = victim

@@ -112,7 +112,8 @@ CIPHEY_CATEGORY = {
 
 
 def rng_for(*parts):
-    return random.Random("gon-v1|" + "|".join(str(p) for p in parts))
+    # Fixed seeds: the corpus must be reproducible byte for byte; nothing here is security
+    return random.Random("gon-v1|" + "|".join(str(p) for p in parts))  # NOSONAR
 
 
 def text_hash(text):
@@ -189,9 +190,19 @@ def norm_ws(s):
 # ------------------------------------------------------------------------------ sources --
 
 
+def inside(root, rel):
+    """`rel` (a path from this script's own lists or the sources manifest) joined to `root`,
+    refusing anything that resolves outside `root` (an absolute path, `..`)."""
+    base = os.path.realpath(root)
+    path = os.path.realpath(os.path.join(base, rel))
+    if os.path.commonpath([base, path]) != base:
+        raise ValueError(f"{rel!r} is outside {base}")
+    return path
+
+
 def gutenberg_body(path):
     """A Project Gutenberg book without its header and licence footer."""
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:  # NOSONAR: callers pass inside(cache, ...) paths
         text = f.read().replace("\r\n", "\n")
     start = re.search(r"^\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG.*$", text, re.M | re.I)
     if start:
@@ -238,7 +249,7 @@ def good_sentence(s, lang):
 
 
 def tatoeba_rows(cache, lang):
-    path = os.path.join(cache, "tatoeba-20261031", f"{ISO3[lang]}_sentences_detailed.tsv.bz2")
+    path = inside(cache, os.path.join("tatoeba-20261031", f"{ISO3[lang]}_sentences_detailed.tsv.bz2"))
     rows = []
     with bz2.open(path, "rt", encoding="utf-8") as f:
         for line in f:
@@ -277,10 +288,10 @@ def book_split(lang, n, books):
 
 
 def wiki_rows(cache, lang):
-    path = os.path.join(cache, "wikipedia-intros-20261104", f"{lang}.jsonl")
+    path = inside(cache, os.path.join("wikipedia-intros-20261104", f"{lang}.jsonl"))
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:  # NOSONAR: path = inside(cache, ...)
         return [json.loads(l) for l in f if l.strip()]
 
 
@@ -695,7 +706,7 @@ class EnglishStats:
         bi = collections.Counter()
         quad = collections.Counter()
         for n in EN_TRAIN_BOOKS:
-            path = os.path.join(cache, "gutenberg", f"pg{n}.txt")
+            path = inside(cache, os.path.join("gutenberg", f"pg{n}.txt"))
             letters = "".join(c for c in gutenberg_body(path).upper() if "A" <= c <= "Z")
             for i in range(len(letters) - 1):
                 bi[letters[i:i + 2]] += 1
@@ -866,7 +877,7 @@ def draw_sentences(lang, cache, catalog_books):
     else:
         books = catalog_books.get(lang, [])
     for n in books:
-        path = os.path.join(cache, "gutenberg", f"pg{n}.txt")
+        path = inside(cache, os.path.join("gutenberg", f"pg{n}.txt"))
         if not os.path.exists(path):
             continue
         split = book_split(lang, n, books)
@@ -976,7 +987,10 @@ def identifier(rng):
         return rng.choice(["bee@skerritt.blog", "admin@example.com", "user.name+tag@example.co.uk",
                            "contact@ctf.example.org"])
     if kind == "hash":
-        return hashlib.md5(str(rng.random()).encode()).hexdigest() if rng.random() < 0.5 else hashlib.sha1(str(rng.random()).encode()).hexdigest()
+        # Benchmark junk shaped like a hash, not security
+        if rng.random() < 0.5:
+            return hashlib.md5(str(rng.random()).encode(), usedforsecurity=False).hexdigest()
+        return hashlib.sha1(str(rng.random()).encode(), usedforsecurity=False).hexdigest()
     if kind == "flag":
         return rng.choice(["flag{", "CTF{", "picoCTF{", "HTB{", "DUCTF{"]) + "".join(rng.choice(alnum + "_") for _ in range(rng.randint(6, 20))) + "}"
     if kind == "number":
@@ -1061,7 +1075,7 @@ def noise(corpus, english_texts):
     for _ in range(200):
         w = s(lower, 3, 12).encode()
         algo = rng.choice(["md5", "sha1", "sha256", "sha512"])
-        add("hash", hashlib.new(algo, w).hexdigest())
+        add("hash", hashlib.new(algo, w, usedforsecurity=False).hexdigest())  # junk, not security
         add("uuid", "-".join(s("0123456789abcdef", n, n) for n in (8, 4, 4, 4, 12)))
     for t in english_texts[::7]:
         add("utf16le_as_latin1", mojibake(t, "utf16le_as_latin1"))

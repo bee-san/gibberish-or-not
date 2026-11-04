@@ -901,6 +901,7 @@ mod wasm {
         std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
         run(Command::new("cargo").current_dir(&root).args([
             "build",
+            "--locked",
             "--release",
             "--target",
             "wasm32-unknown-unknown",
@@ -971,6 +972,7 @@ mod wasm {
         // wasmtime latency: this tool built for wasm32-wasip1
         let built = run(Command::new("cargo").current_dir(&root).args([
             "build",
+            "--locked",
             "--release",
             "--target",
             "wasm32-wasip1",
