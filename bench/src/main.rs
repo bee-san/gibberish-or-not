@@ -56,6 +56,8 @@ struct Args {
     examples: usize,
     no_latency: bool,
     write: bool,
+    /// `sizes --check`: fail when over a budget.
+    write_check: bool,
     /// For latency estimates: this many extra copies of the first pack, under other codes.
     clones: usize,
 }
@@ -74,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
         examples: 0,
         no_latency: false,
         write: false,
+        write_check: false,
         clones: 0,
     };
     let mut it = std::env::args().skip(1);
@@ -104,6 +107,7 @@ fn parse_args() -> Result<Args, String> {
             "--wasm" => a.wasm = true,
             "--no-latency" => a.no_latency = true,
             "--write" => a.write = true,
+            "--check" => a.write_check = true,
             "--clones" => a.clones = val()?.parse().map_err(|_| "bad --clones")?,
             "--fpr-scale" => a.fpr_scale = val()?.parse().map_err(|_| "bad --fpr-scale")?,
             "--l2" => a.l2 = val()?.parse().map_err(|_| "bad --l2")?,
@@ -143,10 +147,7 @@ fn main() {
         "dump" => cmd_dump(&args),
         "slow" => cmd_slow(&args),
         "ranks" => cmd_ranks(&args),
-        "sizes" => {
-            print!("{}", sizes(&args));
-            Ok(())
-        }
+        "sizes" => cmd_sizes(&args),
         _ => cmd_report(&args),
     };
     if let Err(e) = code {
@@ -768,6 +769,65 @@ fn sizes(args: &Args) -> String {
     out
 }
 
+/// Size budgets (docs/languages.md): bytes of model.bin + calibration.txt per language, and
+/// of the WASM module with every language after wasm-opt -Oz.
+const BUDGET_EN: usize = 1 << 20;
+const BUDGET_OTHER: usize = 400 << 10;
+const BUDGET_WASM: usize = 5_500 << 10;
+
+/// `sizes [--wasm] [--check]`: the sizes table; with `--check`, fails over a budget.
+fn cmd_sizes(args: &Args) -> Result<(), String> {
+    print!("{}", sizes(args));
+    if !args.write_check {
+        return Ok(());
+    }
+    let mut over = Vec::new();
+    for p in Detector::new().packs() {
+        let dir = corpus::root().join("languages").join(p.lang().code());
+        let cal = std::fs::metadata(dir.join("calibration.txt"))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let size = p.model_size() + cal;
+        let budget = if p.lang() == Lang::En {
+            BUDGET_EN
+        } else {
+            BUDGET_OTHER
+        };
+        if size > budget {
+            over.push(format!(
+                "{}: {} > {}",
+                p.lang().code(),
+                kb(size),
+                kb(budget)
+            ));
+        }
+    }
+    #[cfg(not(target_os = "wasi"))]
+    if args.wasm {
+        let target = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| corpus::root().join("target"));
+        let opt = target.join("gon-wasm").join("gon_wasm_probe_bg.opt.wasm");
+        let size = std::fs::metadata(&opt)
+            .map(|m| m.len() as usize)
+            .map_err(|e| format!("{}: {e}", opt.display()))?;
+        if size > BUDGET_WASM {
+            over.push(format!("wasm: {} > {}", kb(size), kb(BUDGET_WASM)));
+        }
+    }
+    if over.is_empty() {
+        println!(
+            "SIZES_OK (budgets: en {}, other languages {}, wasm {})",
+            kb(BUDGET_EN),
+            kb(BUDGET_OTHER),
+            kb(BUDGET_WASM)
+        );
+        Ok(())
+    } else {
+        Err(format!("over budget: {}", over.join("; ")))
+    }
+}
+
 fn kb(n: usize) -> String {
     format!("{:.1} KB", n as f64 / 1024.0)
 }
@@ -867,6 +927,9 @@ mod wasm {
                 .join(",")
         );
         std::fs::write(out_dir.join("texts.json"), json).map_err(|e| e.to_string())?;
+        if args.no_latency {
+            return Ok(out);
+        }
         std::fs::write(out_dir.join("latency.js"), NODE_SCRIPT).map_err(|e| e.to_string())?;
         let node = run(Command::new("node")
             .arg(out_dir.join("latency.js"))
@@ -1014,119 +1077,35 @@ fn placeholder_calibration(lang: Lang) -> String {
 
 // --------------------------------------------------------------------- gate --
 
-/// CI: the dev split's metrics must not regress beyond the tolerances against
-/// bench/expected/<corpus>.tsv. `gate --write` rewrites that file: do it in the PR that
-/// changes a model on purpose, and say why.
+/// CI: the dev split, with every language compiled in, must keep
+///
+/// * each language's recall (overall and per length bucket, at each sensitivity) within
+///   RECALL_TOLERANCE of `bench/expected/<corpus>/<code>.tsv` (written by `gate --write
+///   --lang <code>` in the PR that changes that language on purpose);
+/// * the junk false-positive rate of each length bucket and sensitivity at most
+///   FPR_CEILING_FACTOR times that bucket's calibration target (bench/src/fit.rs), plus
+///   FPR_CEILING_SLACK: the budget all languages share.
+///
+/// Per-language files, so the language PRs don't conflict.
 fn cmd_gate(args: &Args) -> Result<(), String> {
     const RECALL_TOLERANCE: f64 = 0.002;
-    const FPR_TOLERANCE: f64 = 0.0002;
-    let path = corpus::root()
+    const FPR_CEILING_FACTOR: f64 = 1.5;
+    const FPR_CEILING_SLACK: f64 = 0.0002;
+    let samples = corpus::load(&args.corpus, "dev")?;
+    let det = Detector::new();
+    let (ours, _) = our_system(&det, &samples);
+    let dir = corpus::root()
         .join("bench")
         .join("expected")
-        .join(format!("{}.tsv", args.corpus));
-    let tmp = std::env::temp_dir().join(format!("gib-bench-gate-{}.tsv", std::process::id()));
-    let gate_args = Args {
-        cmd: "gate".into(),
-        corpus: args.corpus.clone(),
-        split: "dev".into(),
-        langs: args.langs.clone(),
-        wasm: false,
-        lang: None,
-        fpr_scale: args.fpr_scale,
-        l2: args.l2,
-        tsv: Some(tmp.display().to_string()),
-        examples: 0,
-        no_latency: true,
-        write: false,
-        clones: 0,
-    };
-    capture_report(&gate_args)?;
-    let got = std::fs::read_to_string(&tmp).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&tmp);
-    if args.write {
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&path, &got).map_err(|e| e.to_string())?;
-        println!("wrote {}", path.display());
-        return Ok(());
-    }
-    let expected =
-        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let parse = |s: &str| -> BTreeMap<String, f64> {
-        s.lines()
-            .filter_map(|l| {
-                let (k, v) = l.rsplit_once('\t')?;
-                Some((k.to_string(), v.parse().ok()?))
-            })
-            .collect()
-    };
-    let (exp, now) = (parse(&expected), parse(&got));
-    let mut failures = 0;
-    for (k, e) in &exp {
-        let Some(n) = now.get(k) else {
-            println!("MISSING {k}");
-            failures += 1;
-            continue;
-        };
-        if e.is_nan() || n.is_nan() {
-            continue;
-        }
-        let bad = if k.ends_with("recall") {
-            *n < e - RECALL_TOLERANCE
-        } else {
-            *n > e + FPR_TOLERANCE
-        };
-        if bad {
-            println!("REGRESSION {k}: expected {e:.6}, got {n:.6}");
-            failures += 1;
-        }
-    }
-    println!("gate: {} metrics checked against {} (recall tolerance {RECALL_TOLERANCE}, FPR tolerance {FPR_TOLERANCE}): {failures} regressions", exp.len(), path.display());
-    if failures > 0 {
-        return Err("accuracy gate failed".into());
-    }
-    println!("GATE_OK");
-    Ok(())
-}
-
-fn capture_report(args: &Args) -> Result<(), String> {
-    // The report prints to stdout; the gate only needs the TSV, so it runs the same code.
-    let samples = corpus::load(&args.corpus, &args.split)?;
-    let det = detector(args);
-    let scope: BTreeSet<String> = det.enabled().map(|l| l.code().to_string()).collect();
-    let (ours, _) = our_system(&det, &samples);
-    let mut tsv = String::new();
-    for (i, (sn, _)) in SENS.iter().enumerate() {
-        let mut c = Counts::default();
-        for (s, v) in samples.iter().zip(&ours.verdicts) {
-            if let (Some(pos), Some(v)) = (counted(s, &scope), v) {
-                c.add(pos, v[i]);
-            }
-        }
-        let _ = writeln!(tsv, "overall\tgon6\t{sn}\trecall\t{:.6}", c.recall());
-        let _ = writeln!(tsv, "overall\tgon6\t{sn}\tfpr\t{:.6}", c.fpr());
-        for (bi, &(_, _, bn)) in BUCKETS.iter().enumerate() {
-            let mut c = Counts::default();
-            for (s, v) in samples.iter().zip(&ours.verdicts) {
-                if bucket_of(s.chars()) == bi {
-                    if let (Some(pos), Some(v)) = (counted(s, &scope), v) {
-                        c.add(pos, v[i]);
-                    }
-                }
-            }
-            let _ = writeln!(tsv, "bucket\tgon6\t{sn}\t{bn}\trecall\t{:.6}", c.recall());
-            let _ = writeln!(tsv, "bucket\tgon6\t{sn}\t{bn}\tfpr\t{:.6}", c.fpr());
-        }
-        let langs: BTreeSet<String> = samples
-            .iter()
-            .filter(|s| s.label == Label::Pos)
-            .map(|s| s.lang.clone())
-            .collect();
-        for l in &langs {
+        .join(&args.corpus);
+    let recall_lines = |code: &str| -> Vec<(String, f64)> {
+        let mut out = Vec::new();
+        for (i, (sn, _)) in SENS.iter().enumerate() {
             let idx: Vec<usize> = samples
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.label == Label::Pos && &s.lang == l)
-                .map(|(i, _)| i)
+                .filter(|(_, s)| s.label == Label::Pos && s.lang == code)
+                .map(|(j, _)| j)
                 .collect();
             let r = ratio(
                 idx.iter()
@@ -1134,12 +1113,110 @@ fn capture_report(args: &Args) -> Result<(), String> {
                     .count(),
                 idx.len(),
             );
-            let _ = writeln!(tsv, "lang\tgon6\t{sn}\t{l}\trecall\t{r:.6}");
+            out.push((format!("{code}\t{sn}\tall\trecall"), r));
+            for (bi, &(_, _, bn)) in BUCKETS.iter().enumerate() {
+                let in_b: Vec<usize> = idx
+                    .iter()
+                    .copied()
+                    .filter(|&j| bucket_of(samples[j].chars()) == bi)
+                    .collect();
+                if in_b.len() >= 20 {
+                    let r = ratio(
+                        in_b.iter()
+                            .filter(|&&j| ours.verdicts[j].is_some_and(|v| v[i]))
+                            .count(),
+                        in_b.len(),
+                    );
+                    out.push((format!("{code}\t{sn}\t{bn}\trecall"), r));
+                }
+            }
+        }
+        out
+    };
+    if args.write {
+        let lang = args.lang.ok_or("gate --write needs --lang")?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut text = format!("# gib-bench gate --write --lang {}: dev-split recall with every language compiled in\n", lang.code());
+        for (k, v) in recall_lines(lang.code()) {
+            let _ = writeln!(text, "{k}\t{v:.6}");
+        }
+        let path = dir.join(format!("{}.tsv", lang.code()));
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        println!("wrote {}", path.display());
+        return Ok(());
+    }
+    let mut failures = 0;
+    let mut checked = 0;
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "tsv"))
+        .collect();
+    files.sort();
+    for path in &files {
+        let code = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let now: BTreeMap<String, f64> = recall_lines(&code).into_iter().collect();
+        for line in std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())?
+            .lines()
+        {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let Some((k, v)) = line.rsplit_once('\t') else {
+                continue;
+            };
+            let Ok(e) = v.parse::<f64>() else { continue };
+            checked += 1;
+            match now.get(k) {
+                None => {
+                    println!("MISSING {k}");
+                    failures += 1;
+                }
+                Some(n) if *n < e - RECALL_TOLERANCE => {
+                    println!("REGRESSION {k}: expected {e:.4}, got {n:.4}");
+                    failures += 1;
+                }
+                Some(_) => {}
+            }
         }
     }
-    if let Some(p) = &args.tsv {
-        std::fs::write(p, tsv).map_err(|e| e.to_string())?;
+    for (bi, &(lo, _, bn)) in BUCKETS.iter().enumerate() {
+        for (i, (sn, _)) in SENS.iter().enumerate() {
+            let mut c = Counts::default();
+            for (s, v) in samples.iter().zip(&ours.verdicts) {
+                if s.label == Label::Neg && bucket_of(s.chars()) == bi {
+                    c.add(false, v.is_some_and(|v| v[i]));
+                }
+            }
+            // fit::targets is (High, Medium, Low); SENS is (Low, Medium, High)
+            let target = fit::targets(lo as u32)[2 - i];
+            let ceiling = FPR_CEILING_FACTOR * target + FPR_CEILING_SLACK;
+            checked += 1;
+            if c.fpr() > ceiling {
+                println!(
+                    "FPR {bn} {sn}: {:.4}% is above the ceiling {:.4}%",
+                    c.fpr() * 100.0,
+                    ceiling * 100.0
+                );
+                failures += 1;
+            }
+        }
     }
+    println!(
+        "gate: {checked} checks ({} language files in {}; recall tolerance {RECALL_TOLERANCE}, junk FPR ceiling {FPR_CEILING_FACTOR} x target + {FPR_CEILING_SLACK}): {failures} failures",
+        files.len(),
+        dir.display()
+    );
+    if failures > 0 {
+        return Err("accuracy gate failed".into());
+    }
+    println!("GATE_OK");
     Ok(())
 }
 
@@ -1172,7 +1249,7 @@ fn cmd_dump(args: &Args) -> Result<(), String> {
         };
         let _ = write!(
             out,
-            "{}\t{}\t{label}\t{}\t{}\t{:.4}\t{}",
+            "{}\t{}\t{label}\t{}\t{}\t{}\t{}",
             s.id,
             s.lang,
             s.category,

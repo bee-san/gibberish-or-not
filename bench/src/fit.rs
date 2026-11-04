@@ -43,7 +43,7 @@ pub fn examples(
     detector: &Detector,
     lang: Lang,
     samples: &[Sample],
-) -> Vec<(Option<Example>, bool)> {
+) -> Vec<(Option<Example>, bool, bool)> {
     let mut out = Vec::new();
     for s in samples {
         let y = match s.label {
@@ -52,6 +52,7 @@ pub fn examples(
             _ => continue,
         };
         let feats = detector.features(&s.text);
+        let own = !y && s.lang == lang.code();
         let ex = feats
             .into_iter()
             .find(|(l, _, _, _)| *l == lang)
@@ -61,7 +62,7 @@ pub fn examples(
                 chars,
                 rank,
             });
-        out.push((ex, y));
+        out.push((ex, y, own));
     }
     out
 }
@@ -223,6 +224,10 @@ pub fn targets(chars_lo: u32) -> [f64; 3] {
     }
 }
 
+/// A bucket's own-language junk is used for the thresholds when it has at least this many
+/// samples (fewer can't estimate the targets).
+pub const OWN_JUNK_MIN: usize = 500;
+
 /// The gate sits this far (in rank units: log10 per letter) below the lowest positive.
 pub const GATE_MARGIN: f32 = 0.3;
 
@@ -282,7 +287,7 @@ pub fn fit(
     let min_pos = tr
         .iter()
         .chain(dv.iter())
-        .filter_map(|(e, _)| e.as_ref())
+        .filter_map(|(e, _, _)| e.as_ref())
         .filter(|e| e.y)
         .map(|e| e.rank)
         .fold(f32::INFINITY, f32::min);
@@ -293,10 +298,10 @@ pub fn fit(
     };
     let gated_neg = dv
         .iter()
-        .filter_map(|(e, _)| e.as_ref())
+        .filter_map(|(e, _, _)| e.as_ref())
         .filter(|e| !e.y && e.rank < gate)
         .count();
-    let dev_neg = dv.iter().filter(|(_, y)| !y).count();
+    let dev_neg = dv.iter().filter(|(_, y, _)| !y).count();
     lines.push(format!(
         "gate {gate:.3}: rejects {gated_neg} of {dev_neg} dev negatives without the word model"
     ));
@@ -308,12 +313,12 @@ pub fn fit(
         let group = group_of(lo);
         let train_b: Vec<&Example> = tr
             .iter()
-            .filter_map(|(e, _)| e.as_ref())
+            .filter_map(|(e, _, _)| e.as_ref())
             .filter(|e| in_b(e))
             .collect();
         let train_g: Vec<&Example> = tr
             .iter()
-            .filter_map(|(e, _)| e.as_ref())
+            .filter_map(|(e, _, _)| e.as_ref())
             .filter(|e| group_of(e.chars) == group)
             .collect();
         let w = if train_g.is_empty() {
@@ -327,14 +332,20 @@ pub fn fit(
         // buckets by its share of all negatives (counted in every bucket's total in
         // proportion), which we approximate by counting it in no bucket's numerator and
         // in the total of the bucket its text length would fall in (by characters).
+        // All dev junk of the bucket, and the part derived from this language's own text.
+        // At Low, the threshold meets the target on both (the stricter wins), so Low's
+        // false-positive rate holds whatever the mix of junk: own-language junk is the
+        // hardest, and its share varies (the test split has more English than dev).
         let mut neg: Vec<f64> = Vec::new();
+        let mut own: Vec<f64> = Vec::new();
         let mut pos: Vec<f64> = Vec::new();
-        let mut neg_total = 0usize;
-        for (e, y) in &dv {
+        let (mut neg_total, mut own_total) = (0usize, 0usize);
+        for (e, y, is_own) in &dv {
             match e {
                 Some(e) if in_b(e) && e.rank < gate => {
                     if !*y {
                         neg_total += 1;
+                        own_total += usize::from(*is_own);
                     }
                 }
                 Some(e) if in_b(e) => {
@@ -343,17 +354,28 @@ pub fn fit(
                     } else {
                         neg.push(logit(e));
                         neg_total += 1;
+                        if *is_own {
+                            own.push(logit(e));
+                            own_total += 1;
+                        }
                     }
                 }
                 _ => {}
             }
         }
         neg.sort_by(f64::total_cmp);
+        own.sort_by(f64::total_cmp);
         pos.sort_by(f64::total_cmp);
         let mut a = [0.0f64; 5];
         // High, Medium, Low thresholds
         for (i, f) in self::targets(lo).iter().enumerate() {
-            a[i + 1] = threshold(&neg, neg_total, f * targets.scale);
+            let t_all = threshold(&neg, neg_total, f * targets.scale);
+            let t_own = if i == 2 && own_total >= OWN_JUNK_MIN {
+                threshold(&own, own_total, f * targets.scale)
+            } else {
+                f64::NEG_INFINITY
+            };
+            a[i + 1] = t_all.max(t_own);
         }
         // Without enough junk in the bucket, fall back to the previous bucket's anchors
         // relative position, or to the positives' spread

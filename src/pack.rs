@@ -124,7 +124,7 @@ pub(crate) const FEATURES: [&str; 20] = [
     "token_length",
     "identifiers",
     "unbalanced",
-    "script",
+    "covered_nospace",
     "ngram_nospace",
     "coverage_nospace",
     "wordscore_nospace",
@@ -345,6 +345,9 @@ pub struct Pack {
     /// Word table: offset of the slots, number of buckets, class log10 P.
     words: Option<(usize, u32, [f32; 16])>,
     pub(crate) lambda: f32,
+    /// Added to the mean n-gram log10 P to rank packs against each other (default: log10
+    /// of the alphabet size for dense models, 0 for hashed ones).
+    pub(crate) rank_offset: f32,
     pub(crate) max_word_chars: u16,
     pub(crate) seg_min_letters: u16,
     pub(crate) calibration: Calibration,
@@ -482,6 +485,11 @@ impl Pack {
         let lambda = f32_at(parm, 0);
         let max_word_chars = u16_at(parm, 4).clamp(1, 32);
         let seg_min_letters = u16_at(parm, 6);
+        let rank_offset = if parm.len() >= 12 {
+            f32_at(parm, 8)
+        } else {
+            f32::NAN
+        };
 
         // Lower-case overrides (Turkish I -> ı ...)
         let mut case_overrides = Vec::new();
@@ -613,6 +621,7 @@ impl Pack {
             ngrams,
             words,
             lambda,
+            rank_offset,
             max_word_chars,
             seg_min_letters,
             calibration,

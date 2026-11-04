@@ -13,6 +13,7 @@ categories = ["text-processing", "no-std", "wasm"]
 # evaluation-only data) and the build scripts stay in the repository.
 include = [
     "/src/**/*.rs",
+    "/tests/*.rs",
     "/languages/*/model.bin",
     "/languages/*/calibration.txt",
     "/languages/*/README.md",

@@ -73,12 +73,16 @@ pub(crate) struct NgramPass {
 
 impl NgramPass {
     /// How well the text fits the pack's n-gram model, comparable across packs: mean
-    /// log10 P per letter plus log10 of the alphabet size (the score of a uniform model),
-    /// with each foreign letter at -3.
+    /// log10 P per letter plus the pack's rank offset (by default log10 of the alphabet
+    /// size, so that a uniform model scores 0), with each foreign letter at -3.
     pub fn rank(&self, pack: &Pack) -> f32 {
-        let per = match &pack.ngrams {
-            Ngrams::Dense { alpha, .. } => log10_int(u32::from(*alpha)),
-            Ngrams::Hashed { .. } => 0.0,
+        let per = if pack.rank_offset.is_finite() {
+            pack.rank_offset
+        } else {
+            match &pack.ngrams {
+                Ngrams::Dense { alpha, .. } => log10_int(u32::from(*alpha)),
+                Ngrams::Hashed { .. } => 0.0,
+            }
         };
         let n = (self.scored + self.foreign).max(1) as f32;
         (self.ng_sum + per * self.scored as f32 - 3.0 * self.foreign as f32) / n
@@ -115,7 +119,10 @@ pub(crate) fn ngram_pass(pack: &Pack, a: &Analysis<'_>) -> Option<NgramPass> {
         return None;
     }
     let text = a.text;
-    let mut foreign = a.letters - letters;
+    // Words in other scripts are another language's business: neutral, like identifiers
+    // (`Paul (Russian: Собор Святых Апостолов) is the cathedral ...`). Only letters of the
+    // pack's scripts that its alphabet lacks are foreign.
+    let mut foreign = 0u32;
     let (mut ng_sum, mut scored) = (0f32, 0u32);
     match &pack.ngrams {
         Ngrams::Dense {
@@ -345,12 +352,16 @@ pub(crate) fn features_from(
         a.decoder_symbols as f32 / nonspace,
         a.symbols as f32 / nonspace,
         a.punct as f32 / nonspace,
-        foreign as f32 / a.letters.max(1) as f32,
+        foreign as f32 / lf,
         spaced,
         toklen,
         a.neutral_chunks as f32 / a.chunks.max(1) as f32,
         if a.unbalanced { 1.0 } else { 0.0 },
-        letters as f32 / a.letters.max(1) as f32,
+        if spaced == 0.0 && known >= letters {
+            1.0
+        } else {
+            0.0
+        },
         ngram * (1.0 - spaced),
         coverage * (1.0 - spaced),
         wordscore * (1.0 - spaced),

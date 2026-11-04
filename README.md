@@ -1,361 +1,127 @@
 <div align="center">
 
-# 🔍 Gibberish Detection Tool
+# gibberish-or-not
 
-**Instantly detect if text is English or nonsense with 99% accuracy**
+**Is this text natural language, or gibberish?**
 
 [![Crates.io](https://img.shields.io/crates/v/gibberish-or-not.svg)](https://crates.io/crates/gibberish-or-not)
 [![Documentation](https://docs.rs/gibberish-or-not/badge.svg)](https://docs.rs/gibberish-or-not)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[Documentation](https://docs.rs/gibberish-or-not) |
-[Examples](#examples) |
-[Contributing](#contributing)
-
 </div>
 
-## ⚡ Quick Install
+gibberish-or-not tells natural-language text apart from everything else: cipher and decoder
+output, encodings, hashes, random strings, mojibake. It says which language and gives a
+calibrated score. It is what [Ciphey](https://github.com/bee-san/Ciphey) asks about every
+candidate plaintext, thousands of times per search, so a check takes about a microsecond,
+the core is `no_std` with no OS, file, thread or network use, and it runs in the browser.
 
-```bash
-# As a CLI tool
-cargo install gibberish-or-not
-
-# As a library in Cargo.toml
-gibberish-or-not = "4.1.1"
+```toml
+[dependencies]
+gibberish-or-not = "6"
 ```
 
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-## 🎯 Examples
-=======
->>>>>>> main
-## 🤖 Enhanced Detection with BERT
-
-The library offers enhanced detection using a BERT model for more accurate results on borderline cases. To use enhanced detection:
-
-1. Set up HuggingFace authentication (one of two methods):
-
-   **Method 1: Environment Variable**
-   ```bash
-   # Set the token in your environment
-   export HUGGING_FACE_HUB_TOKEN=your_token_here
-   ```
-
-   **Method 2: Direct Token**
-   ```rust
-   use gibberish_or_not::{download_model_with_progress_bar, default_model_path};
-   
-   // Pass token directly to the download function
-   download_model_with_progress_bar(default_model_path(), Some("your_token_here"))?;
-   ```
-
-   Get your token by:
-   1. Creating an account at https://huggingface.co
-   2. Generating a token at https://huggingface.co/settings/tokens
-
-2. Download the model (choose one method):
-   ```bash
-   # Using the CLI (uses environment variable)
-   cargo run --bin download_model
-
-   # Or in your code (using direct token)
-   use gibberish_or_not::{download_model_with_progress_bar, default_model_path};
-   download_model_with_progress_bar(default_model_path(), Some("your_token_here"))?;
-   ```
-
-3. Use enhanced detection in your code:
-   ```rust
-<<<<<<< HEAD
-   use gibberish_or_not::{GibberishDetector, Sensitivity, default_model_path};
-   
-   // Create detector with model
-   let detector = GibberishDetector::with_model(default_model_path());
-   
-   // Check if enhanced detection is available
-=======
-   // Basic usage - automatically uses enhanced detection if model exists
-   use gibberish_or_not::{is_gibberish, Sensitivity};
-   
-   // The function automatically checks for model at default_model_path()
-   let result = is_gibberish("Your text here", Sensitivity::Medium);
-   
-   // Optional: Explicit model control
-   use gibberish_or_not::{GibberishDetector, default_model_path};
-   
-   // Create detector with model - useful if you want to:
-   // - Use a custom model path
-   // - Check if enhanced detection is available
-   // - Reuse the same model instance
-   let detector = GibberishDetector::with_model(default_model_path());
->>>>>>> main
-   if detector.has_enhanced_detection() {
-       let result = detector.is_gibberish("Your text here", Sensitivity::Medium);
-   }
-   ```
-
-<<<<<<< HEAD
-=======
-Note: The basic detection algorithm will be used as a fallback if the model is not available. The model is automatically loaded from the default path (`default_model_path()`) when using the simple `is_gibberish` function.
-
->>>>>>> main
-You can also check the token status programmatically:
 ```rust
-use gibberish_or_not::{check_token_status, TokenStatus, default_model_path};
+use gibberish_or_not::{detect, is_gibberish, Detector, Lang, Sensitivity};
 
-match check_token_status(default_model_path()) {
-    TokenStatus::Required => println!("HuggingFace token needed"),
-    TokenStatus::Available => println!("Token found, ready to download"),
-    TokenStatus::NotRequired => println!("Model exists, no token needed"),
-}
-```
-
-<<<<<<< HEAD
-Note: The basic detection algorithm will be used as a fallback if the model is not available.
-
-## �� Examples
-=======
-##  Examples
->>>>>>> Stashed changes
->>>>>>> main
-
-```rust
-use gibberish_or_not::{is_gibberish, is_password, Sensitivity};
-
-// Password Detection
-assert!(is_password("123456"));  // Detects common passwords
-
-// Valid English
 assert!(!is_gibberish("The quick brown fox jumps over the lazy dog", Sensitivity::Medium));
-assert!(!is_gibberish("Hello, world!", Sensitivity::Medium));
+assert!(!is_gibberish("MEETMEATTHEUSUALPLACEATTEN", Sensitivity::Medium)); // no spaces
+assert!(is_gibberish("Wkh txlfn eurzq ira mxsv ryhu", Sensitivity::Medium)); // Caesar +3
+assert!(is_gibberish("5f4dcc3b5aa765d61d8327deb882cf99", Sensitivity::High)); // a hash
 
-// Gibberish
-assert!(is_gibberish("asdf jkl qwerty", Sensitivity::Medium));
-assert!(is_gibberish("xkcd vwpq mntb", Sensitivity::Medium));
-assert!(is_gibberish("println!({});", Sensitivity::Medium)); // Code snippets are classified as gibberish
+let d = detect("Hello, my name is Bee and I like to decode things");
+assert!(d.is_language);
+assert_eq!(d.language, Some(Lang::En));
+println!("{:.2}", d.score); // calibrated: 0.5 High, 0.75 Medium, 0.9 Low
+
+// The strictest level, English only
+let strict = Detector::new().languages(&[Lang::En]).sensitivity(Sensitivity::Low);
+assert!(strict.is_gibberish("Gsv jfrxp yildm ulc"));
 ```
 
-## 🔬 How It Works
+Upgrading from 5.x: [MIGRATION.md](MIGRATION.md) (`is_gibberish`, `is_password` and
+`Sensitivity` are unchanged).
 
-Our advanced detection algorithm uses multiple components:
+## How good is it
 
-### 1. 📚 Dictionary Analysis
-- **370,000+ English words** compiled into the binary
-- Perfect hash table for O(1) lookups
-- Zero runtime loading overhead
-- Includes technical terms and proper nouns
+On the frozen benchmark corpus (bench/corpus/v1, test split: 5,026 English texts of every
+kind and 90,345 pieces of junk: wrong cipher keys, near-English Vigenère key-search output,
+encodings, hashes, random strings, mojibake, real candidates from Ciphey's searches),
+against gibberish-or-not 5.0.7 and against 5.0.7 plus everything Ciphey's English checker
+adds to it today:
 
-### 2. 🧮 N-gram Analysis
-- **Trigrams** (3-letter sequences)
-- **Quadgrams** (4-letter sequences)
-- Trained on massive English text corpus
-- Weighted scoring system
+| | Low: recall / false positives | Medium | High |
+|---|---|---|---|
+| **gibberish-or-not 6.0** | **97.8% / 0.18%** | **98.4% / 0.36%** | **98.5% / 0.88%** |
+| 5.0.7 | 70.9% / 0.63% | 84.1% / 3.06% | 92.1% / 19.1% |
+| 5.0.7 + Ciphey's English checker | 95.3% / 0.27% | 97.0% / 0.51% | 97.3% / 1.23% |
 
-### 3. 🎯 Smart Classification
-- Composite scoring system combining:
-  - English word ratio (40% weight)
-  - Character transition probability (25% weight)
-  - Trigram analysis (15% weight)
-  - Quadgram analysis (10% weight)
-  - Vowel-consonant ratio (10% weight)
-- Length-based threshold adjustment
-- Special case handling for:
-  - Very short text (<10 chars)
-  - Non-printable characters
-  - Code snippets
-  - URLs and technical content
+Per length, kind of text and kind of junk, the speed, the sizes and how to reproduce every
+number: [docs/benchmark.md](docs/benchmark.md). In short:
 
-## 🎚️ Sensitivity Levels
+- **Speed**: median 0.7 µs and 99th percentile 13 µs per check (inputs up to 256
+  characters, on a shared busy host); WASM within 1.7× of native.
+- **Size**: the English pack is 956 KB; the whole WASM module after `wasm-opt -Oz` is
+  1.2 MB.
+- **5.x's BERT path** never loaded a model (bee-san/Ciphey#1031) and is gone, with its 96
+  crates.
 
-The library provides three sensitivity levels:
+## Languages
 
-### High Sensitivity
-- Most lenient classification
-- Easily accepts text as English
-- Best for minimizing false positives
-- Use when: You want to catch anything remotely English-like
+English ships in 6.0.0. Spanish, French, German, Italian, Portuguese, Dutch, Polish,
+Turkish, Russian, Chinese, Japanese and Korean are built under one contract
+([docs/languages.md](docs/languages.md)) and ship in 6.x as they pass its gates. Each is
+a Cargo feature (`en`, `es`, ... `ko`), all on by default:
 
-### Medium Sensitivity (Default)
-- Balanced approach
-- Suitable for general text classification
-- Reliable for most use cases
-- Use when: You want general-purpose gibberish detection
-
-### Low Sensitivity
-- Most strict classification
-- Requires strong evidence of English
-- Best for security applications
-- Use when: False positives are costly
-
-## 🔑 Password Detection
-
-Built-in detection of common passwords:
-
-```rust
-use gibberish_or_not::is_password;
-
-assert!(is_password("123456"));     // Common password
-assert!(is_password("password"));   // Common password
-assert!(!is_password("unique_and_secure_passphrase")); // Not in common list
+```toml
+gibberish-or-not = { version = "6", default-features = false, features = ["en"] }
 ```
 
-## 🎯 Special Cases
+Packs for other languages, or your own English, load at run time:
+`Detector::new().with_pack(Pack::from_bytes(&bytes)?)`.
 
-The library handles various special cases:
+## Sensitivity
 
-- Code snippets are classified as gibberish
-- URLs in text are preserved for analysis
-- Technical terms and abbreviations are recognized
-- Mixed-language content is supported
-- ASCII art is detected as gibberish
-- Common internet text patterns are recognized
+`Low` is the strictest, `High` the most lenient. Each level is a fixed minimum score (0.9,
+0.75, 0.5), calibrated so that it accepts the same small share of junk at every text
+length (docs/benchmark.md has the targets). Ciphey checks its classical ciphers' best keys
+at Low and everything else at Medium.
 
-## 🧮 Algorithm Deep Dive
+## What counts as language
 
-The gibberish detection algorithm combines multiple scoring components into a weighted composite score. Here's a detailed look at each component:
+Text in a supported language, in any case, with or without spaces between the words,
+short phrases included. Identifiers (numbers, URLs, email addresses, hashes, keys, CTF
+flags) are neutral: they are left out and the rest decides, so `The password is
+IFukwKGsFW8MOq3IRFqrxE1hxTNEbUPR` is language and the password alone is not. Telling what
+an identifier is, is [pyWhat](https://github.com/bee-san/pyWhat)'s job.
 
-### Composite Score Formula
+## How it works
 
-The final classification uses a weighted sum:
+Per language, a character n-gram model, a word list with frequencies (and word
+segmentation for text without spaces) and a small logistic classifier, calibrated against
+the junk false-positive rate per length; no neural network. [docs/design.md](docs/design.md)
+has the architecture, the decisions and the options that lost.
 
-$S = 0.4E + 0.25T + 0.15G_3 + 0.1G_4 + 0.1V$
+## WASM, no_std, CLI
 
-Where:
-- $E$ = English word ratio
-- $T$ = Character transition probability
-- $G_3$ = Trigram score
-- $G_4$ = Quadgram score
-- $V$ = Vowel-consonant ratio (binary: 1 if in range [0.3, 0.7], 0 otherwise)
+- `cargo build --target wasm32-unknown-unknown` works with default features. The `wasm`
+  feature adds JavaScript bindings: `detect`, `score`, `isGibberish`, `isPassword`,
+  `languages`.
+- The library is `#![no_std]` with `alloc`; models are embedded with `include_bytes!`.
+- `cargo install gibberish-or-not --features cli` gives `gibberish [--sensitivity
+  low|medium|high] [--lang en,...] [TEXT ...]` (reads lines from stdin without TEXT).
 
-### Length-Based Threshold Adjustment
+## Passwords
 
-The threshold is dynamically adjusted based on text length:
+`is_password(text)` is true for 10,000+ common passwords (Ciphey's password checker uses
+it).
 
-```rust
-let threshold = match text_length {
-    0..=20  => 0.7,  // Very short text needs higher threshold
-    21..=50 => 0.8,  // Short text
-    51..=100 => 0.9, // Medium text
-    101..=200 => 1.0,// Standard threshold
-    _ => 1.1,        // Long text can be more lenient
-} * sensitivity_factor;
-```
+## Contributing
 
-### Character Entropy
+Issues and pull requests are welcome. Language packs follow
+[docs/languages.md](docs/languages.md); every accuracy claim comes from
+`cargo run --release -p gib-bench -- --corpus v1` (docs/benchmark.md).
 
-We calculate Shannon entropy to measure randomness:
+## License
 
-$H = -\sum_{i} p_i \log_2(p_i)$
-
-Where $p_i$ is the probability of character $i$ occurring in the text.
-
-```rust
-let entropy = char_frequencies.iter()
-    .map(|p| -p * p.log2())
-    .sum::<f64>();
-```
-
-### N-gram Analysis
-
-Trigrams and quadgrams are scored using frequency analysis:
-
-$G_n = \frac{\text{valid n-grams}}{\text{total n-grams}}$
-
-```rust
-let trigram_score = valid_trigrams.len() as f64 / total_trigrams.len() as f64;
-let quadgram_score = valid_quadgrams.len() as f64 / total_quadgrams.len() as f64;
-```
-
-### Character Transition Probability
-
-We analyze character pair frequencies against known English patterns:
-
-$T = \frac{\text{valid transitions}}{\text{total transitions}}$
-
-The transition matrix is pre-computed from a large English corpus and stored as a perfect hash table.
-
-### Sensitivity Levels
-
-The final threshold varies by sensitivity:
-- Low: $0.35 \times \text{length\_factor}$
-- Medium: $0.25 \times \text{length\_factor}$
-- High: $0.15 \times \text{length\_factor}$
-
-### Special Case Overrides
-
-The algorithm includes fast-path decisions:
-
-1. If English word ratio > 0.8: Not gibberish
-2. If ≥ 3 English words (Medium/High sensitivity): Not gibberish
-3. If no English words AND transition score < 0.3 (Low/Medium): Gibberish
-
-### Why These Weights?
-
-- **Word Ratio (40%)**: Strong indicator of English text
-- **Transitions (25%)**: Captures natural language patterns
-- **Trigrams (15%)**: Common subword patterns
-- **Quadgrams (10%)**: Longer patterns, but noisier
-- **Vowel Ratio (10%)**: Basic language structure
-
-This weighting balances accuracy with computational efficiency, prioritizing stronger indicators while still considering multiple aspects of language structure.
-
-## ⚡ Performance
-
-The library is optimized for speed, with benchmarks showing excellent performance across different text types:
-
-### Basic Detection Speed (without BERT)
-
-| Text Length | Processing Time |
-|------------|----------------|
-| Short (10-20 chars) | 2.3-2.7 μs |
-| Medium (20-50 chars) | 4-7 μs |
-| Long (50-100 chars) | 7-15 μs |
-| Very Long (200+ chars) | ~50 μs |
-
-### Enhanced Detection Speed (with BERT)
-
-| Text Length | First Run* | Subsequent Runs |
-|------------|------------|-----------------|
-| Short (10-20 chars) | ~100ms | 5-10ms |
-| Medium (20-50 chars) | ~100ms | 5-15ms |
-| Long (50-100 chars) | ~100ms | 10-20ms |
-| Very Long (200+ chars) | ~100ms | 15-30ms |
-
-*First run includes model loading time. The model is cached after first use.
-
-### Sensitivity Level Impact (Basic Detection)
-
-| Sensitivity | Processing Time |
-|------------|----------------|
-| Low | ~7.3 μs |
-| Medium | ~6.7 μs |
-| High | ~7.9 μs |
-
-These benchmarks were run on a modern CPU using the Criterion benchmarking framework. The library achieves this performance through:
-
-- Perfect hash tables for O(1) dictionary lookups
-- Pre-computed n-gram tables
-- Optimized character transition matrices
-- Early-exit optimizations for clear cases
-- Zero runtime loading overhead
-- Memory-mapped BERT model loading
-- Model result caching
-
-### Memory Usage
-
-- Basic Detection: < 1MB
-- Enhanced Detection: ~400-500MB (BERT model, memory-mapped)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to:
-
-- Report bugs and request features
-- Improve documentation
-- Submit pull requests
-- Add test cases
-
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
+MIT ([LICENSE](LICENSE)); data sources and their licences in [NOTICE](NOTICE).

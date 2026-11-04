@@ -50,6 +50,11 @@
 
 extern crate alloc;
 
+// The README's examples are doctests too
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 mod lang;
 mod model;
 mod pack;

@@ -341,14 +341,21 @@ def write_model(path, lang, scripts, params, alphabet=None, dense=None, hashed=N
     """Writes model.bin.
 
     * lang: two-letter code; scripts: list of SCRIPT names;
-    * params: dict with lambda (log10 per unknown letter), max_word_chars, seg_min_letters;
+    * params: dict with lambda (log10 per unknown letter), max_word_chars, seg_min_letters,
+      and optionally rank_offset (see the PARM comment below);
     * alphabet + dense: an Alphabet and dense_tables() output (or hashed: (tables, floor)
       from hashed_tables());
     * words: {normalised word: class} from word_classes(), or None;
     * case_overrides: {upper: lower} applied before Unicode lower-casing (Turkish I -> ı).
     """
     sections = []
-    sections.append((b"PARM", struct.pack("<fHH", params["lambda"], params["max_word_chars"], params["seg_min_letters"])))
+    parm = struct.pack("<fHH", params["lambda"], params["max_word_chars"], params["seg_min_letters"])
+    if "rank_offset" in params:
+        # Added to the mean n-gram log10 P to rank packs of one script against each other;
+        # default log10(alphabet size) for dense models, 0 for hashed ones: set it for a
+        # hashed model, e.g. log10 of the number of distinct units it was trained on
+        parm += struct.pack("<f", params["rank_offset"])
+    sections.append((b"PARM", parm))
     if case_overrides:
         sections.append((b"CASE", b"".join(struct.pack("<II", ord(a), ord(b)) for a, b in sorted(case_overrides.items()))))
     if alphabet is not None:
