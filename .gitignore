@@ -1,3 +1,7 @@
 /target
 .aider*
 .cursor
+.scratch/
+.tools/
+node_modules/
+__pycache__/
