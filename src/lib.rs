@@ -77,6 +77,22 @@ use once_cell::race::OnceBox;
 
 /// How many languages of one script are scored in full, at most (see [`Detector::detect`]).
 const TOP_K: usize = 3;
+/// For a text of 12 or more letters, the full n-gram pass is only run for the packs of its
+/// script that the cheap [`model::pre_rank`] puts first: the best PRE_MIN, and the others
+/// within PRE_WINDOW of the best, PRE_MAX at most (hashed packs always get it). With 9
+/// packs of one script the full passes alone would cost more than the latency budget
+/// (docs/design.md, "Many languages").
+const PRE_MIN: usize = 2;
+const PRE_MAX: usize = 5;
+const PRE_WINDOW: f32 = 0.3;
+/// Scoring stops at the first language that scores at least this (Low's threshold, or the
+/// detector's `min_score` if higher): no other language can then change whether the text
+/// is language at any sensitivity.
+const STOP_SCORE: f32 = 0.9;
+/// For a text of 12 or more letters, scoring also stops at a language that scores below
+/// this (or is gated): the text is junk to a language that fits it better than the rest
+/// (measured on en + es: no dev recall lost; docs/design.md).
+const CONTINUE_MIN: f32 = 0.01;
 /// Texts with fewer letters are scored in full by every language of their script.
 const ALL_PACKS_BELOW_LETTERS: u32 = 12;
 /// Of those, only languages whose n-gram rank is this close to the best are scored: the
@@ -224,27 +240,72 @@ impl Detector {
             return (0.0, None);
         }
         let main = a.main_scripts();
-        // The n-gram pass of every pack of the text's script ranks them; only the best
-        // TOP_K get the word model and the classifier (docs/design.md). Short texts get
-        // all of them: their n-gram ranks are noisy, and they are cheap.
-        let mut candidates: Vec<(&Pack, model::NgramPass, f32)> = self
+        let long = a.letters >= ALL_PACKS_BELOW_LETTERS;
+        // The packs of the text's script. Of a long text, the cheap pre-rank first drops
+        // the packs whose pre-gate it is under, then keeps the best (docs/design.md)
+        let mut packs: Vec<(&Pack, f32)> = self
             .packs
             .iter()
             .filter(|p| p.scripts() & main != 0)
-            .filter_map(|p| {
+            .map(|p| (&**p, f32::INFINITY))
+            .collect();
+        if long
+            && (packs.len() > PRE_MIN
+                || packs.iter().any(|(p, _)| p.calibration.pregate.is_finite()))
+        {
+            let lead = model::Lead::new(&a);
+            for (p, r) in &mut packs {
+                // Hashed models have no pre-rank: they are kept (sorted first)
+                *r = model::pre_rank(p, &lead).unwrap_or(f32::INFINITY);
+            }
+            packs.retain(|(p, r)| *r >= p.calibration.pregate);
+            if packs.len() > PRE_MIN {
+                // Stable: on a tie, the earlier pack (registry order) first
+                packs.sort_by(|x, y| y.1.total_cmp(&x.1));
+                let best = packs
+                    .iter()
+                    .map(|p| p.1)
+                    .find(|r| r.is_finite())
+                    .unwrap_or(f32::INFINITY);
+                let mut dense = 0usize;
+                packs.retain(|&(_, r)| {
+                    if r == f32::INFINITY {
+                        return true;
+                    }
+                    dense += 1;
+                    dense <= PRE_MIN || (dense <= PRE_MAX && r >= best - PRE_WINDOW)
+                });
+            }
+        }
+        // The full n-gram pass ranks them. Of a long text, only the best TOP_K within
+        // RANK_WINDOW of the best are looked at; short texts get all (their ranks are noisy,
+        // and they are cheap). A pack whose gate the text's rank is below scores 0.
+        let mut candidates: Vec<(&Pack, model::NgramPass, f32)> = packs
+            .iter()
+            .filter_map(|&(p, _)| {
                 let ng = model::ngram_pass(p, &a)?;
                 let rank = ng.rank(p);
-                (rank >= p.calibration.gate).then_some((&**p, ng, rank))
+                Some((p, ng, rank))
             })
             .collect();
-        if candidates.len() > 1 && a.letters >= ALL_PACKS_BELOW_LETTERS {
-            candidates.sort_by(|x, y| y.2.total_cmp(&x.2));
+        candidates.sort_by(|x, y| y.2.total_cmp(&x.2));
+        if long && candidates.len() > 1 {
             candidates.truncate(TOP_K);
             let top = candidates[0].2;
             candidates.retain(|c| c.2 >= top - RANK_WINDOW);
         }
+        // In rank order, until one scores STOP_SCORE (the text is then language at every
+        // sensitivity, whatever the others would say), or, of a long text, one scores under
+        // CONTINUE_MIN
+        let stop = STOP_SCORE.max(self.min_score);
         let mut best: Option<(f32, f32, Lang)> = None;
-        for (pack, ng, _) in &candidates {
+        for (pack, ng, rank) in &candidates {
+            if *rank < pack.calibration.gate_for(a.content_chars) {
+                if long {
+                    break;
+                }
+                continue;
+            }
             // Every candidate is scored as `features` (and so `gib-bench fit`) scores it:
             // a calibration only holds for features computed the same way
             let s = model::score_from(pack, &a, ng, true);
@@ -255,29 +316,39 @@ impl Detector {
             if better {
                 best = Some((s.score, s.margin, pack.lang()));
             }
+            if s.score >= stop || (long && s.score < CONTINUE_MIN) {
+                break;
+            }
         }
         best.map_or((0.0, None), |(score, _, lang)| (score, Some(lang)))
     }
 
     /// The classifier features of `text` for each language that applies, its length without
-    /// identifiers (what the calibration buckets by) and the language's n-gram rank (for
-    /// `gib-bench fit`; not a stable API). Gates are not applied.
+    /// identifiers (what the calibration buckets by), the language's n-gram rank, and its
+    /// pre-rank if the text has 12 or more letters and the pack a dense model (else +inf)
+    /// (for `gib-bench fit`; not a stable API). Gates are not applied.
     #[doc(hidden)]
-    pub fn features(&self, text: &str) -> Vec<(Lang, Vec<f32>, u32, f32)> {
+    pub fn features(&self, text: &str) -> Vec<(Lang, Vec<f32>, u32, f32, f32)> {
         let a = text::analyze(text);
         let mut out = Vec::new();
         if model::vetoed(&a) {
             return out;
         }
         let main = a.main_scripts();
+        let lead = model::Lead::new(&a);
         for pack in &self.packs {
             if pack.scripts() & main == 0 {
                 continue;
             }
             if let Some(ng) = model::ngram_pass(pack, &a) {
                 let rank = ng.rank(pack);
+                let pre = if a.letters >= ALL_PACKS_BELOW_LETTERS {
+                    model::pre_rank(pack, &lead).unwrap_or(f32::INFINITY)
+                } else {
+                    f32::INFINITY
+                };
                 let (x, chars) = model::features_from(pack, &a, &ng, true);
-                out.push((pack.lang(), x.to_vec(), chars, rank));
+                out.push((pack.lang(), x.to_vec(), chars, rank, pre));
             }
         }
         out

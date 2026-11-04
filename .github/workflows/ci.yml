@@ -86,6 +86,6 @@ jobs:
       - name: tests under wasmtime (wasm32-wasip1, 32-bit usize)
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
-        run: cargo test --locked --target wasm32-wasip1 --lib --test detect --test crafted_packs --test hashed_pack
+        run: cargo test --locked --target wasm32-wasip1 --lib --test detect --test crafted_packs --test hashed_pack --test many_packs
       - name: size budgets (every language, and the WASM module after wasm-opt -Oz)
         run: cargo run --locked --release -p gib-bench -- sizes --wasm --no-latency --check

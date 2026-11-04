@@ -92,6 +92,17 @@ impl Bytes {
     }
 }
 
+/// 10^x for |x| <= 1 (no libm): the exponential series of x ln 10.
+fn pow10(x: f64) -> f64 {
+    let y = x * core::f64::consts::LN_10;
+    let (mut term, mut sum) = (1f64, 1f64);
+    for k in 1..30 {
+        term *= y / k as f64;
+        sum += term;
+    }
+    sum
+}
+
 #[inline]
 fn u16_at(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
@@ -136,14 +147,16 @@ pub(crate) const FEATURES: [&str; 22] = [
 ];
 pub(crate) const N_FEATURES: usize = FEATURES.len();
 
-/// One length bucket of a calibration: texts of `lo..=hi` characters, the classifier's weights, and
-/// the logits that map to scores 0, 0.5 (High), 0.75 (Medium), 0.9 (Low) and 1.
+/// One length bucket of a calibration: texts of `lo..=hi` characters, the classifier's weights,
+/// the logits that map to scores 0, 0.5 (High), 0.75 (Medium), 0.9 (Low) and 1, and the
+/// bucket's own n-gram gate (`-inf`: only the calibration's).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Bucket {
     pub lo: u32,
     pub hi: u32,
     pub w: [f32; N_FEATURES],
     pub anchors: [f32; 5],
+    pub gate: f32,
 }
 
 /// Score anchors: what a bucket's five anchor logits map to.
@@ -174,22 +187,28 @@ impl Bucket {
 }
 
 /// A pack's calibration: buckets by length in characters, in order, and the n-gram gate:
-/// texts whose n-gram rank (`model::NgramPass::rank`) for this pack is below it are
-/// rejected by the pack without the word model (none of the dev split's positives are).
+/// texts whose n-gram rank (`model::NgramPass::rank`) for this pack is below it, or below
+/// their bucket's gate, are rejected by the pack without the word model (none of the train
+/// or dev split's positives are).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub(crate) struct Calibration {
     pub buckets: Vec<Bucket>,
     pub gate: f32,
+    /// Texts of 12 or more letters whose pre-rank (`model::pre_rank`) is below this are
+    /// rejected before the full n-gram pass (`-inf`: none).
+    pub pregate: f32,
 }
 
 impl Calibration {
     /// Parses `calibration.txt`. Lines: `gon-calibration 1`, `lang xx`, `features <names>`
-    /// (must be [`FEATURES`]), then one `bucket <lo> <hi> <weights...> | <5 anchors>` per
-    /// length bucket, from 1 character up. `#` starts a comment.
+    /// (must be [`FEATURES`]), `gate <rank>` and `pregate <rank>` (optional), then one
+    /// `bucket <lo> <hi> <weights...> | <5 anchors> [| <gate>]` per length bucket, from 1
+    /// character up. `#` starts a comment.
     pub fn parse(text: &str) -> Result<Calibration, PackError> {
         let mut buckets = Vec::new();
         let mut header = false;
         let mut gate = f32::NEG_INFINITY;
+        let mut pregate = f32::NEG_INFINITY;
         for (n, line) in text.lines().enumerate() {
             let line = line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
@@ -212,6 +231,13 @@ impl Calibration {
                         .filter(|v| !v.is_nan())
                         .ok_or(err)?;
                 }
+                Some("pregate") => {
+                    pregate = it
+                        .next()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .filter(|v| !v.is_nan())
+                        .ok_or(err)?;
+                }
                 Some("features") => {
                     if !it.eq(FEATURES.iter().copied()) {
                         return Err(err);
@@ -220,9 +246,19 @@ impl Calibration {
                 Some("bucket") => {
                     let fields: Vec<&str> = it.collect();
                     let num = |s: &str| s.parse::<f32>().map_err(|_| err.clone());
-                    if fields.len() != 2 + N_FEATURES + 1 + 5 || fields[2 + N_FEATURES] != "|" {
+                    let plain = 2 + N_FEATURES + 1 + 5;
+                    let gated = fields.len() == plain + 2 && fields[plain] == "|";
+                    if (fields.len() != plain && !gated) || fields[2 + N_FEATURES] != "|" {
                         return Err(err);
                     }
+                    let bucket_gate = if gated {
+                        num(fields[plain + 1])
+                            .ok()
+                            .filter(|v| !v.is_nan())
+                            .ok_or(err.clone())?
+                    } else {
+                        f32::NEG_INFINITY
+                    };
                     let lo = num(fields[0])? as u32;
                     let hi = if fields[1] == "inf" {
                         u32::MAX
@@ -234,7 +270,7 @@ impl Calibration {
                         *x = num(s)?;
                     }
                     let mut anchors = [0f32; 5];
-                    for (x, s) in anchors.iter_mut().zip(&fields[3 + N_FEATURES..]) {
+                    for (x, s) in anchors.iter_mut().zip(&fields[3 + N_FEATURES..plain]) {
                         *x = num(s)?;
                     }
                     if w.iter().chain(anchors.iter()).any(|v| !v.is_finite())
@@ -242,7 +278,13 @@ impl Calibration {
                     {
                         return Err(err);
                     }
-                    buckets.push(Bucket { lo, hi, w, anchors });
+                    buckets.push(Bucket {
+                        lo,
+                        hi,
+                        w,
+                        anchors,
+                        gate: bucket_gate,
+                    });
                 }
                 _ => return Err(err),
             }
@@ -261,13 +303,23 @@ impl Calibration {
         if buckets.last().map(|b| b.hi) != Some(u32::MAX) {
             return Err(PackError::Calibration(0));
         }
-        Ok(Calibration { buckets, gate })
+        Ok(Calibration {
+            buckets,
+            gate,
+            pregate,
+        })
     }
 
     #[inline]
     pub fn bucket(&self, chars: u32) -> &Bucket {
         let i = self.buckets.partition_point(|b| b.hi < chars);
         &self.buckets[i.min(self.buckets.len() - 1)]
+    }
+
+    /// The n-gram gate for a text of `chars` characters (without identifiers).
+    #[inline]
+    pub fn gate_for(&self, chars: u32) -> f32 {
+        self.gate.max(self.bucket(chars).gate)
     }
 
     /// Writes the calibration back as text.
@@ -284,6 +336,9 @@ impl Calibration {
         if self.gate.is_finite() {
             let _ = writeln!(s, "gate {}", self.gate);
         }
+        if self.pregate.is_finite() {
+            let _ = writeln!(s, "pregate {}", self.pregate);
+        }
         for b in &self.buckets {
             let _ = write!(s, "bucket {} ", b.lo);
             if b.hi == u32::MAX {
@@ -297,6 +352,9 @@ impl Calibration {
             let _ = write!(s, " |");
             for a in b.anchors {
                 let _ = write!(s, " {a}");
+            }
+            if b.gate.is_finite() {
+                let _ = write!(s, " | {}", b.gate);
             }
             let _ = writeln!(s);
         }
@@ -355,6 +413,13 @@ pub struct Pack {
     pub(crate) max_word_chars: u16,
     pub(crate) seg_min_letters: u16,
     pub(crate) calibration: Calibration,
+    /// What the pack's own language scores on average in `model::pre_rank` (its order-2
+    /// model's expected log10 P per letter plus the rank offset); 0 for a hashed model.
+    pub(crate) pre_center: f32,
+    /// One bit per value of the low bits of the word table's fingerprints, set for every
+    /// word: most lookups of a word that isn't there (segmentation tries many) stop here,
+    /// without reading the table. Built at load time.
+    word_filter: Box<[u64]>,
 }
 
 impl fmt::Debug for Pack {
@@ -645,13 +710,92 @@ impl Pack {
             max_word_chars,
             seg_min_letters,
             calibration,
+            pre_center: 0.0,
+            word_filter: Box::new([]),
         };
         pack.rest = entries;
         // Fast tables for the blocks most packs use
         pack.low = (0u32..0x250).map(|u| pack.slow_symbol(u)).collect();
         pack.cyrillic = (0x400u32..0x530).map(|u| pack.slow_symbol(u)).collect();
         pack.bytes = bytes;
+        pack.pre_center = pack.expected_pre_rank();
+        pack.word_filter = pack.build_word_filter();
         Ok(pack)
+    }
+
+    /// See [`Pack::word_filter`]: about 8 bits per word, a power of two.
+    fn build_word_filter(&self) -> Box<[u64]> {
+        let Some((off, n, _)) = self.words.as_ref() else {
+            return Box::new([]);
+        };
+        let b = self.bytes.get();
+        let slots = (*n as usize).saturating_mul(8);
+        let bits = (slots * 8).next_power_of_two().clamp(1 << 12, 1 << 22);
+        let mut filter = alloc::vec![0u64; bits / 64].into_boxed_slice();
+        for i in 0..slots {
+            let slot = u32_at(b, off + 4 * i);
+            if slot != 0 {
+                let f = ((slot >> 4) as usize) & (bits - 1);
+                filter[f / 64] |= 1 << (f % 64);
+            }
+        }
+        filter
+    }
+
+    /// The expected value of `model::pre_rank` (before centring) on the pack's own text:
+    /// sum over contexts p of P(p) sum over letters c of P(c | p) log10 P(c | p), from the
+    /// order-1 and order-2 tables (each row renormalised: the tables are quantised), plus
+    /// the rank offset. 0 for a hashed model.
+    fn expected_pre_rank(&self) -> f32 {
+        let Ngrams::Dense {
+            order,
+            alpha,
+            scale,
+            ..
+        } = &self.ngrams
+        else {
+            return 0.0;
+        };
+        let a = usize::from(*alpha);
+        // P of a quantised value q: 10^(-q scale) = base^q
+        let base = pow10(-f64::from(*scale));
+        let mut p_of = [0f64; 256];
+        let mut v = 1.0;
+        for x in p_of.iter_mut() {
+            *x = v;
+            v *= base;
+        }
+        let lp_of = |q: u8| -f64::from(q) * f64::from(*scale);
+        let row = |k: usize, start: usize| -> f64 {
+            // sum_c P(c) log10 P(c), renormalised
+            let (mut sum_p, mut sum_plp) = (0f64, 0f64);
+            for i in 0..a {
+                let q = self.dense(k, start + i);
+                sum_p += p_of[q as usize];
+                sum_plp += p_of[q as usize] * lp_of(q);
+            }
+            if sum_p > 0.0 {
+                sum_plp / sum_p
+            } else {
+                0.0
+            }
+        };
+        let expected = if *order >= 2 {
+            let (mut total, mut weighted) = (0f64, 0f64);
+            for prev in 0..a {
+                let p = p_of[self.dense(1, prev) as usize];
+                total += p;
+                weighted += p * row(2, prev * a);
+            }
+            if total > 0.0 {
+                weighted / total
+            } else {
+                0.0
+            }
+        } else {
+            row(1, 0)
+        };
+        expected as f32 + crate::model::rank_offset(self)
     }
 
     /// The character after this pack's lower-casing (its overrides, then Unicode's).
@@ -703,6 +847,19 @@ impl Pack {
         (s != NONE).then_some(s)
     }
 
+    /// Dense table `k` (1..=order) of quantised log10 P, for loops over many entries;
+    /// empty for a hashed model.
+    #[inline]
+    pub(crate) fn dense_table(&self, k: usize) -> &[u8] {
+        match &self.ngrams {
+            Ngrams::Dense { offsets, alpha, .. } => {
+                let len = usize::from(*alpha).pow(k as u32);
+                &self.bytes.get()[offsets[k]..offsets[k] + len]
+            }
+            Ngrams::Hashed { .. } => &[],
+        }
+    }
+
     /// Quantised log10 P from dense table `k` at `index`.
     #[inline]
     pub(crate) fn dense(&self, k: usize, index: usize) -> u8 {
@@ -751,8 +908,12 @@ impl Pack {
     #[inline]
     pub(crate) fn word_logp(&self, h: u64) -> Option<f32> {
         let (off, n, logp) = self.words.as_ref()?;
-        let b = self.bytes.get();
         let fp = (mix(h ^ 0x5bd1_e995) >> 36) as u32;
+        let f = (fp as usize) & (self.word_filter.len() * 64 - 1);
+        if self.word_filter[f / 64] & (1 << (f % 64)) == 0 {
+            return None;
+        }
+        let b = self.bytes.get();
         let b1 = reduce(h, *n);
         let mut b2 = reduce(h >> 32, *n);
         if b2 == b1 {
@@ -781,6 +942,35 @@ impl Pack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibration_gates_parse_and_round_trip() {
+        let names = FEATURES.join(" ");
+        let zeros = alloc::vec!["0"; N_FEATURES].join(" ");
+        let text = alloc::format!(
+            "gon-calibration 1\nlang en\nfeatures {names}\ngate -1\npregate -0.5\nbucket 1 9 {zeros} | 0 1 2 3 4 | 0.25\nbucket 10 inf {zeros} | 0 1 2 3 4\n"
+        );
+        let c = Calibration::parse(&text).unwrap();
+        assert_eq!(c.gate, -1.0);
+        assert_eq!(c.pregate, -0.5);
+        assert_eq!(c.buckets[0].gate, 0.25);
+        assert_eq!(c.buckets[1].gate, f32::NEG_INFINITY);
+        // The higher of the calibration's gate and the bucket's
+        assert_eq!(c.gate_for(5), 0.25);
+        assert_eq!(c.gate_for(50), -1.0);
+        assert_eq!(Calibration::parse(&c.to_text(Lang::En)).unwrap(), c);
+        // Malformed: a bucket gate that isn't a number, or a third `|` field
+        assert!(Calibration::parse(&text.replace("| 0.25", "| x")).is_err());
+        assert!(Calibration::parse(&text.replace("| 0.25", "| 0.25 | 1")).is_err());
+        assert!(Calibration::parse(&text.replace("pregate -0.5", "pregate NaN")).is_err());
+    }
+
+    #[test]
+    fn pow10_without_libm() {
+        for x in [-1.0f64, -0.04, 0.0, 0.5, 1.0] {
+            assert!((pow10(x) - 10f64.powf(x)).abs() < 1e-12, "{x}");
+        }
+    }
 
     #[test]
     fn hashes_match_packlib() {

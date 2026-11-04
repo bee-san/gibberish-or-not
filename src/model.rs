@@ -244,6 +244,98 @@ pub(crate) fn ngram_pass(pack: &Pack, a: &Analysis<'_>) -> Option<NgramPass> {
     })
 }
 
+/// Letters a pre-rank looks at, at most.
+pub(crate) const LEAD_LETTERS: usize = 32;
+
+/// The first [`LEAD_LETTERS`] letters of the text's word tokens, once per text, for
+/// [`pre_rank`]: each with its token's script, and whether a gap (a chunk without words)
+/// comes before it.
+pub(crate) struct Lead {
+    letters: [(char, u8, bool); LEAD_LETTERS],
+    len: usize,
+}
+
+impl Lead {
+    pub(crate) fn new(a: &Analysis<'_>) -> Lead {
+        let mut out = Lead {
+            letters: [('\0', 0, false); LEAD_LETTERS],
+            len: 0,
+        };
+        let mut prev_chunk: Option<u16> = None;
+        'toks: for t in &a.toks {
+            let mut gap = prev_chunk.is_some_and(|p| t.chunk > p + 1);
+            prev_chunk = Some(t.chunk);
+            for c in a.text[t.start as usize..t.end as usize].chars() {
+                if !c.is_alphabetic() {
+                    continue;
+                }
+                if out.len == LEAD_LETTERS {
+                    break 'toks;
+                }
+                out.letters[out.len] = (c, t.script, gap);
+                out.len += 1;
+                gap = false;
+            }
+        }
+        out
+    }
+}
+
+/// A cheap first look at how well the text fits a dense pack: its order-2 model (order 1
+/// after a break) over the text's first [`LEAD_LETTERS`] letters, in the units of
+/// [`NgramPass::rank`], minus what the pack's own language scores on average
+/// ([`Pack::pre_center`]): so that packs of different alphabets and orders compare (the raw
+/// value favours some models on every text). `None` for a hashed pack or no letters.
+pub(crate) fn pre_rank(pack: &Pack, lead: &Lead) -> Option<f32> {
+    let Ngrams::Dense {
+        alpha,
+        scale,
+        order,
+        ..
+    } = &pack.ngrams
+    else {
+        return None;
+    };
+    let scripts = pack.scripts();
+    let alpha = *alpha as usize;
+    let unigram = pack.dense_table(1);
+    let bigram = if *order >= 2 {
+        pack.dense_table(2)
+    } else {
+        &[]
+    };
+    let (mut q, mut scored, mut foreign) = (0u32, 0u32, 0u32);
+    let mut prev: Option<usize> = None;
+    for &(c, script, gap) in &lead.letters[..lead.len] {
+        // A letter of another script's word is a break, as in the full pass
+        if script & scripts == 0 {
+            prev = None;
+            continue;
+        }
+        if gap {
+            prev = None;
+        }
+        let Some(sym) = pack.symbol(c) else {
+            foreign += 1;
+            prev = None;
+            continue;
+        };
+        let sym = sym as usize;
+        q += u32::from(match prev {
+            Some(p) if !bigram.is_empty() => bigram[p * alpha + sym],
+            _ => unigram[sym],
+        });
+        scored += 1;
+        prev = Some(sym);
+    }
+    if scored + foreign == 0 {
+        return None;
+    }
+    let sum = -(q as f32) * scale;
+    let n = (scored + foreign) as f32;
+    Some((sum + rank_offset(pack) * scored as f32 - 3.0 * foreign as f32) / n - pack.pre_center)
+}
+
 /// Mean log10 P per letter of one token on its own (for the segmentation gate).
 fn token_ngram(pack: &Pack, word: &str) -> f32 {
     let (mut sum, mut scored) = (0f32, 0u32);

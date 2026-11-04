@@ -34,6 +34,8 @@ pub struct Example {
     pub chars: u32,
     /// The pack's n-gram rank.
     pub rank: f32,
+    /// The pack's pre-rank (texts of 12+ letters, dense models; else +inf).
+    pub pre: f32,
 }
 
 /// The features of every positive of `lang` and every negative, for `lang`'s pack.
@@ -53,15 +55,17 @@ pub fn examples(
         };
         let feats = detector.features(&s.text);
         let own = !y && s.lang == lang.code();
-        let ex = feats
-            .into_iter()
-            .find(|(l, _, _, _)| *l == lang)
-            .map(|(_, x, chars, rank)| Example {
-                x: x.iter().map(|&v| f64::from(v)).collect(),
-                y,
-                chars,
-                rank,
-            });
+        let ex =
+            feats
+                .into_iter()
+                .find(|(l, _, _, _, _)| *l == lang)
+                .map(|(_, x, chars, rank, pre)| Example {
+                    x: x.iter().map(|&v| f64::from(v)).collect(),
+                    y,
+                    chars,
+                    rank,
+                    pre,
+                });
         out.push((ex, y, own));
     }
     out
@@ -235,6 +239,16 @@ pub const OWN_JUNK_MIN: usize = 500;
 
 /// The gate sits this far (in rank units: log10 per letter) below the lowest positive.
 pub const GATE_MARGIN: f32 = 0.3;
+
+/// In budget mode, texts of 12 or more letters whose pre-rank is this far below the lowest
+/// such train or dev positive's are rejected before the full n-gram pass (`pregate`).
+pub const PREGATE_MARGIN: f32 = 0.3;
+
+/// In budget mode a length bucket with at least this many train and dev positives gets an
+/// n-gram gate of its own: below its lowest positive, with the margin. Longer texts fit a
+/// language better, so the one gate of all lengths (set by the shortest texts) lets most
+/// junk of 20+ characters through to the word model.
+pub const BUCKET_GATE_MIN: usize = 20;
 
 /// How a pack's thresholds are set (docs/languages.md, "Calibration").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,8 +491,10 @@ struct Dev {
     halves: [Vec<f64>; 2],
     train_pos: usize,
     train_neg: usize,
-    /// The calibration's n-gram gate (the same for every bucket).
+    /// The bucket's n-gram gate: the calibration's, or the bucket's own if higher.
     gate: f32,
+    /// The calibration's pre-gate (`-inf`: none).
+    pregate: f32,
 }
 
 /// Mode::Targets: each bucket at its own targets; the short buckets (under SHORT_CHARS
@@ -621,7 +637,7 @@ fn budget_thresholds(
                 .zip(&taken)
                 .filter(|((e, y, _), t)| !*y && !t[i] && e.as_ref().is_some_and(|e| in_b(&e)))
                 .filter_map(|((e, _, _), _)| e.as_ref())
-                .filter(|e| e.rank >= dev_gate(dev))
+                .filter(|e| e.rank >= dev[b].gate && e.pre >= dev[b].pregate)
                 .map(|e| e.x.iter().zip(w).map(|(a, b)| a * b).sum::<f64>())
                 .collect();
             neg.sort_by(f64::total_cmp);
@@ -681,9 +697,89 @@ fn budget_thresholds(
     }
 }
 
-/// The n-gram gate the calibration will have (the same as `fit` computes).
-fn dev_gate(dev: &[Dev]) -> f32 {
-    dev.first().map_or(f32::NEG_INFINITY, |d| d.gate)
+/// Budget mode's extra gates, from the train and dev positives (`examples`), given the
+/// calibration's gate: the pre-gate (below every positive of 12+ letters' pre-rank, by
+/// [`PREGATE_MARGIN`]), and a gate per length bucket with [`BUCKET_GATE_MIN`] positives
+/// (below its lowest positive's rank, by [`GATE_MARGIN`]; `-inf` where that isn't above
+/// `gate`).
+pub fn budget_gates(
+    tr: &[(Option<Example>, bool, bool)],
+    dv: &[(Option<Example>, bool, bool)],
+    gate: f32,
+) -> (f32, Vec<f32>) {
+    let positives = || {
+        tr.iter()
+            .chain(dv.iter())
+            .filter_map(|(e, _, _)| e.as_ref())
+            .filter(|e| e.y)
+    };
+    let bucket_gates = (0..BUCKETS.len())
+        .map(|b| {
+            let ranks: Vec<f32> = positives()
+                .filter(|e| bucket_of(e.chars) == b)
+                .map(|e| e.rank)
+                .collect();
+            if ranks.len() < BUCKET_GATE_MIN {
+                return f32::NEG_INFINITY;
+            }
+            let low = ranks.iter().copied().fold(f32::INFINITY, f32::min) - GATE_MARGIN;
+            if low > gate {
+                low
+            } else {
+                f32::NEG_INFINITY
+            }
+        })
+        .collect();
+    let long_pre: Vec<f32> = positives()
+        .filter(|e| e.pre.is_finite())
+        .map(|e| e.pre)
+        .collect();
+    let pregate = if long_pre.len() >= BUCKET_GATE_MIN {
+        long_pre.iter().copied().fold(f32::INFINITY, f32::min) - PREGATE_MARGIN
+    } else {
+        f32::NEG_INFINITY
+    };
+    (pregate, bucket_gates)
+}
+
+/// `cal` (a calibration's text) with budget mode's gates added: `pregate`, and each bucket
+/// line's own gate.
+pub fn with_gates(cal: &str, pregate: f32, bucket_gates: &[f32]) -> String {
+    let mut out = String::new();
+    let mut b = 0usize;
+    for line in cal.lines() {
+        out.push_str(line);
+        if line.starts_with("bucket ") {
+            if let Some(g) = bucket_gates.get(b).filter(|g| g.is_finite()) {
+                out.push_str(&format!(" | {g}"));
+            }
+            b += 1;
+        }
+        out.push('\n');
+        if line.starts_with("gate ") && pregate.is_finite() {
+            out.push_str(&format!("pregate {pregate}\n"));
+        }
+    }
+    out
+}
+
+/// The calibration's gate (below every train and dev positive's rank, by `GATE_MARGIN`).
+pub fn base_gate(
+    tr: &[(Option<Example>, bool, bool)],
+    dv: &[(Option<Example>, bool, bool)],
+) -> f32 {
+    let min_pos = tr
+        .iter()
+        .chain(dv.iter())
+        .filter_map(|(e, _, _)| e.as_ref())
+        .filter(|e| e.y)
+        .map(|e| e.rank)
+        .fold(f32::INFINITY, f32::min);
+    if min_pos.is_finite() {
+        min_pos - GATE_MARGIN
+    } else {
+        f32::NEG_INFINITY
+    }
 }
 
 pub fn fit(
@@ -715,18 +811,7 @@ pub fn fit(
         targets.scale
     ));
     // The gate: below every train and dev positive's rank, with a margin
-    let min_pos = tr
-        .iter()
-        .chain(dv.iter())
-        .filter_map(|(e, _, _)| e.as_ref())
-        .filter(|e| e.y)
-        .map(|e| e.rank)
-        .fold(f32::INFINITY, f32::min);
-    let gate = if min_pos.is_finite() {
-        min_pos - GATE_MARGIN
-    } else {
-        f32::NEG_INFINITY
-    };
+    let gate = base_gate(&tr, &dv);
     let gated_neg = dv
         .iter()
         .filter_map(|(e, _, _)| e.as_ref())
@@ -737,6 +822,32 @@ pub fn fit(
         "gate {gate:.3}: rejects {gated_neg} of {dev_neg} dev negatives without the word model"
     ));
     cal.push_str(&format!("gate {gate}\n"));
+    let (pregate, bucket_gates) = if targets.mode == Mode::Budget {
+        budget_gates(&tr, &dv, gate)
+    } else {
+        (f32::NEG_INFINITY, vec![f32::NEG_INFINITY; BUCKETS.len()])
+    };
+    if pregate.is_finite() {
+        cal.push_str(&format!("pregate {pregate}\n"));
+        let n = dv
+            .iter()
+            .filter_map(|(e, _, _)| e.as_ref())
+            .filter(|e| !e.y && e.pre < pregate)
+            .count();
+        lines.push(format!(
+            "pregate {pregate:.3}: rejects {n} dev negatives before the full n-gram pass"
+        ));
+    }
+    if bucket_gates.iter().any(|g| g.is_finite()) {
+        let more = dv
+            .iter()
+            .filter_map(|(e, _, _)| e.as_ref())
+            .filter(|e| !e.y && e.rank >= gate && e.rank < bucket_gates[bucket_of(e.chars)])
+            .count();
+        lines.push(format!(
+            "bucket gates: reject {more} more dev negatives without the word model"
+        ));
+    }
     // Pass 1: weights per group of buckets, and every bucket's dev logits
     let mut dev: Vec<Dev> = Vec::new();
     for (b, &lo) in BUCKETS.iter().enumerate() {
@@ -771,7 +882,8 @@ pub fn fit(
                 .filter(|e| in_b(e) && !e.y)
                 .count(),
             w: Vec::new(),
-            gate,
+            gate: gate.max(bucket_gates[b]),
+            pregate,
         };
         // Negatives the pack doesn't apply to (no letters in its scripts, vetoed) are
         // rejected by it whatever the threshold, and counted in no bucket.
@@ -781,7 +893,7 @@ pub fn fit(
             if !in_b(e) {
                 continue;
             }
-            let z = if e.rank < gate {
+            let z = if e.rank < d.gate || e.pre < d.pregate {
                 f64::NEG_INFINITY
             } else {
                 logit(e)
@@ -917,6 +1029,9 @@ pub fn fit(
         cal.push_str(" |");
         for v in a {
             cal.push_str(&format!(" {}", v as f32));
+        }
+        if bucket_gates[b].is_finite() {
+            cal.push_str(&format!(" | {}", bucket_gates[b]));
         }
         cal.push('\n');
     }

@@ -15,7 +15,7 @@ fn detector() -> Detector {
 fn features(text: &str) -> (f32, f32, f32) {
     let f = detector().features(text);
     assert_eq!(f.len(), 1, "{text:?}");
-    let (_, x, _, rank) = &f[0];
+    let (_, x, _, rank, _) = &f[0];
     (x[2], x[1], *rank)
 }
 
