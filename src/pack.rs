@@ -307,6 +307,8 @@ impl Calibration {
 // ---------------------------------------------------------------------------- model --
 
 const MODEL_MAGIC: &[u8; 4] = b"GONM";
+/// The most lower-case overrides a pack may have (Turkish needs 2).
+const MAX_CASE_OVERRIDES: usize = 16;
 const PACK_MAGIC: &[u8; 4] = b"GONP";
 const NONE: u16 = u16::MAX;
 
@@ -499,9 +501,12 @@ impl Pack {
             f32::NAN
         };
 
-        // Lower-case overrides (Turkish I -> ı ...)
+        // Lower-case overrides (Turkish I -> ı ...): a few at most, scanned for every letter
         let mut case_overrides = Vec::new();
         if let Some(s) = section(b"CASE")? {
+            if s.len() > 8 * MAX_CASE_OVERRIDES {
+                return Err(PackError::Invalid("too many CASE overrides"));
+            }
             // chunks_exact rather than as_chunks (Rust 1.88), for older toolchains
             #[allow(clippy::chunks_exact_to_as_chunks)]
             for e in s.chunks_exact(8) {
@@ -818,6 +823,22 @@ mod tests {
         assert!(Calibration::parse(&text.replace("| -1 0 1 2 3", "| -1 2 1 2 3")).is_err());
         assert!(Calibration::parse("gon-calibration 1\n").is_err());
         assert!(Calibration::parse(&text.replace("features bias", "features nope")).is_err());
+    }
+
+    #[test]
+    fn hashed_lookups_check_the_fingerprint() {
+        // tests/fixtures/hashed-za.bin: hashed tables of 2^10 slots, about a tenth full.
+        // Unseen characters must almost never be "found": without the fingerprint check
+        // about a tenth would be (they land in a slot another n-gram uses).
+        let model = include_bytes!("../tests/fixtures/hashed-za.bin");
+        let cal = include_str!("../tests/fixtures/hashed-za.calibration.txt");
+        let pack = Pack::from_static(model, cal).unwrap();
+        let unseen = (0x9F00u32..0x9F00 + 2000).filter(|u| char::from_u32(*u).is_some());
+        let found = unseen.filter(|&u| pack.hashed(&[u]).1 > 0).count();
+        assert!(found <= 20, "{found} of 2000 unseen characters found");
+        // and seen ones are found
+        let we = '我' as u32;
+        assert_eq!(pack.hashed(&[we]).1, 1);
     }
 
     #[test]

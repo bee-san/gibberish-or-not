@@ -10,7 +10,7 @@ same bytes. The cache is write-once: files are never changed or deleted.
 | cache directory | what | licence | shipped in a pack? |
 |---|---|---|---|
 | `tatoeba-20261031/<iso3>_sentences_detailed.tsv.bz2` | Tatoeba per-language exports (sentence id, language, text, contributor, dates), 13 languages | CC BY 2.0 FR (attribution: Tatoeba, tatoeba.org) | yes, as counts (n-gram and word frequencies) |
-| `gutenberg/pg<n>.txt` | Project Gutenberg plain-text books: English 85 + 299 train, 3 dev, 8 test; 24 per other language where Gutenberg has them (`gutenberg_books` in sources.json) | public domain in the USA | yes, as counts |
+| `gutenberg/pg<n>.txt` | Project Gutenberg plain-text books: English 85 + 296 train, 3 dev, 8 test; up to 24 per other language where Gutenberg has them (`gutenberg_books` in sources.json; copyrighted ebooks are left out) | public domain in the USA | yes, as counts |
 | `gutenberg/pg_catalog-20261101.csv` | Gutenberg's catalog, to pick books per language | public domain | no |
 | `gutenberg/3201/*.txt` | Grady Ward's Moby word lists (Gutenberg ebook 3201) | public domain | yes (English word list) |
 | `wikipedia-intros-20261104/<lang>.jsonl` | 300 random article introductions per language, with page and revision ids | CC BY-SA 4.0 | **no: evaluation only** (test split) |

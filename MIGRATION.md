@@ -36,7 +36,8 @@ their signatures and meaning.
 | `GibberishDetector`, `with_model`, `has_enhanced_detection` | `Detector`. The BERT path never loaded a model (bee-san/Ciphey#1031) |
 | `download_model`, `download_model_with_progress_bar`, `default_model_path`, `model_exists`, `check_token_status`, `TokenStatus`, `ModelError`, the HuggingFace token | nothing to download: the models are embedded |
 | `is_string_bad_quality`, `calculate_non_printable_ratio` | `detect` (control characters veto) |
-| binaries `dictionary`, `is_gibberish`, `passwords`, `enhanced_detection`, `test_sensitivity`, `download_model` | `gibberish` with `--features cli` |
+| binaries `dictionary`, `is_gibberish`, `passwords`, `enhanced_detection` and `test_sensitivity` | `gibberish` with `--features cli` |
+| the hidden `download_with_progress_bar` re-export | nothing to download |
 | dependencies candle, tokenizers (onig, C), safetensors, reqwest (openssl), serde, dirs, chrono, clap, env_logger, lazy_static, encoding_rs, unicode-segmentation | `phf` and `once_cell` (no_std) only |
 
 ## Behaviour changes
@@ -47,7 +48,7 @@ their signatures and meaning.
   alone is gibberish to gibberish-or-not (ask pyWhat what it is).
 - Wrong cipher keys, near-English Vigenère key-search output, reversed text, encodings,
   hashes, random strings and mojibake are rejected far more often (on the benchmark's test
-  split, 5.0.7 accepted 19.2% of the junk at High, 6.0 accepts 0.81%).
+  split, 5.0.7 accepted 19.1% of the junk at High, 6.0 accepts 0.80%).
 - Text in a language whose pack isn't compiled in: Russian, Chinese, Japanese and Korean
   are rejected, but many Latin-script sentences read as English to the English pack and
   are accepted, labelled `en`. On the benchmark's test split, at Medium, 6.0.0 accepts
@@ -55,7 +56,11 @@ their signatures and meaning.
   Portuguese and 32.2% of Dutch sentences, phrases and words (5.0.7: 58.5%, 49.8%, 42.1%,
   38.5%; docs/benchmark.md). When a language's pack ships, its text gets its own language.
 - Repeated letters and repeated short words (`zzzz`, `NO NO NO NO`, `INININ`, `and the and
-  the and the`) are vetoed: gibberish at every sensitivity.
+  the and the`), and text that is one letter with a few others (base64 of mostly-zero
+  buffers, `AAAAAAAAAAAAAAAAAAAAAQ==`), are vetoed: gibberish at every sensitivity. That
+  includes real exclamations that are only a repetition: `Help! Help! Help!`, `No, no,
+  no!`, `Ho ho ho`, `はいはいはい`. A sentence with a repetition in it passes (`I am very
+  very tired`, `Ha ha ha, very funny.`).
 - Text longer than 4,096 bytes is judged by its first 4,096.
 
 ## Ciphey's exact changes
@@ -90,8 +95,8 @@ dictionary lookup. Ask the word list:
 
 With 1 and 2 (and nothing else), Athena@Medium's held-out F1 goes from 0.939 to 0.971
 (false positives 139 → 46), Athena@Low from 0.946 to 0.972 (96 → 33). End to end the
-result is unchanged within the run-to-run spread (270–271 of 296 correct for both, run
-alternately twice; docs/benchmark.md). Ciphey's dependency graph shrinks from 356 to 206
+result is unchanged within the run-to-run spread (268–271 of 296 correct before, 270–271
+after, run alternately twice; docs/benchmark.md). Ciphey's dependency graph shrinks from 356 to 206
 lines of `cargo tree -e normal --prefix none | sort -u` (294 → 180 crate versions).
 
 **3. Optional: let gibberish-or-not decide** (`is_english` keeps only Ciphey's own vetoes:

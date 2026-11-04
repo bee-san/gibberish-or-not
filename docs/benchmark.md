@@ -22,7 +22,7 @@ needs the data cache (`$GON_DATA_DIR`, bench/sources/README.md).
 
 [bench/corpus/v1](../bench/corpus/v1/README.md), frozen: 53,531 positives (natural-language
 text in 13 languages: sentences, paragraphs, phrases, short phrases, words, upper case,
-space-less, sentences with identifiers) and 231,889 negatives (classical-cipher output of
+space-less, sentences with identifiers) and 232,349 negatives (classical-cipher output of
 real text with wrong keys, optimised Vigenère key-search output, encodings, hashes, random
 strings in many alphabets, repetitions, mojibake, and real candidates from Ciphey's
 searches), split into train, dev and test **by source** (book, Tatoeba contributor, Ciphey
@@ -55,8 +55,12 @@ Identifiers alone, code, JSON and passwords are reported but never counted ("inf
 
 ## Calibration targets
 
-`gib-bench fit` sets each length bucket's thresholds at these junk false-positive rates on
-the dev split (bench/src/fit.rs). They are below both baselines' dev rates in every bucket.
+For the base pack, English, `gib-bench fit --mode targets` sets each length bucket's
+thresholds at these junk false-positive rates on the dev split (bench/src/fit.rs). They
+are below both baselines' dev rates in every bucket. Every other pack is fitted in budget
+mode: one budget per sensitivity, gate 2's allowance of new false positives, spent over all
+buckets where it buys the most recall, with these per-bucket rates as caps
+(docs/languages.md, "Calibration").
 
 | characters | High | Medium | Low |
 |---|---:|---:|---:|
@@ -85,38 +89,38 @@ languages together.
 
 ## Current numbers: gibberish-or-not 6.0.0 (English)
 
-Test split, English positives (5,026) against all negatives (90,616). Host: shared 64-core
+Test split, English positives (5,026) against all negatives (90,764). Host: shared 64-core
 Linux, Rust 1.99.1, release builds. Model: `languages/en/model.bin` sha256 `bf53e552…`,
-`calibration.txt` `8b17af2a…`.
+`calibration.txt` `02d7a449…`.
 
 | | sensitivity | precision | recall | F1 | false positives | FPR |
 |---|---|---:|---:|---:|---:|---:|
 | **gibberish-or-not 6.0** | Low | 97.6% | **97.0%** | **0.973** | 121 | **0.13%** |
 | | Medium | 94.3% | **98.6%** | **0.964** | 297 | **0.33%** |
-| | High | 87.2% | **98.9%** | **0.927** | 730 | **0.81%** |
-| 5.0.7 | Low | 85.8% | 70.9% | 0.776 | 592 | 0.65% |
-| | Medium | 60.2% | 84.1% | 0.702 | 2,796 | 3.09% |
-| | High | 21.1% | 92.1% | 0.343 | 17,360 | 19.2% |
-| 5.0.7 + Ciphey's English checker | Low | 94.5% | 95.3% | 0.949 | 279 | 0.31% |
-| | Medium | 90.9% | 97.0% | 0.939 | 488 | 0.54% |
+| | High | 87.2% | **98.9%** | **0.927** | 730 | **0.80%** |
+| 5.0.7 | Low | 85.8% | 70.9% | 0.776 | 590 | 0.65% |
+| | Medium | 60.2% | 84.1% | 0.702 | 2,798 | 3.08% |
+| | High | 21.1% | 92.1% | 0.343 | 17,365 | 19.1% |
+| 5.0.7 + Ciphey's English checker | Low | 94.5% | 95.3% | 0.949 | 276 | 0.30% |
+| | Medium | 91.0% | 97.0% | 0.939 | 485 | 0.53% |
 | | High | 80.5% | 97.3% | 0.881 | 1,182 | 1.30% |
 
 ### By length (test; recall / FPR)
 
 | characters | positives / negatives | sensitivity | gibberish-or-not 6 | 5.0.7 | 5.0.7 + Ciphey English |
 |---|---:|---|---|---|---|
-| 1–9 | 643 / 11,925 | Low | 79.9% / 0.034% | 41.5% / 0.11% | 78.8% / 0.034% |
+| 1–9 | 643 / 11,936 | Low | 79.9% / 0.034% | 41.5% / 0.11% | 78.8% / 0.034% |
 | | | Medium | 90.8% / 0.059% | 41.5% / 0.13% | 87.9% / 0.11% |
 | | | High | 92.8% / 0.092% | 41.5% / 0.52% | 88.0% / 0.11% |
-| 10–19 | 844 / 15,749 | Low | 98.3% / 0.11% | 71.4% / 0.74% | 96.6% / 0.12% |
-| | | Medium | 98.8% / 0.16% | 88.4% / 2.48% | 97.3% / 0.20% |
-| | | High | 99.2% / 0.21% | 98.9% / 19.2% | 97.4% / 0.42% |
-| 20–49 | 1,779 / 30,812 | Low | 99.9% / 0.17% | 73.1% / 1.04% | 97.8% / 0.52% |
-| | | Medium | 99.9% / 0.41% | 90.9% / 4.05% | 98.5% / 0.72% |
-| | | High | 100.0% / 0.94% | 99.6% / 25.0% | 98.9% / 1.50% |
-| 50–199 | 1,703 / 28,469 | Low | 99.9% / 0.17% | 78.5% / 0.50% | 98.2% / 0.34% |
-| | | Medium | 99.9% / 0.48% | 90.6% / 3.27% | 98.7% / 0.68% |
-| | | High | 100.0% / 1.35% | 99.8% / 22.2% | 99.0% / 2.03% |
+| 10–19 | 844 / 15,779 | Low | 98.3% / 0.11% | 71.4% / 0.74% | 96.6% / 0.11% |
+| | | Medium | 98.8% / 0.16% | 88.4% / 2.47% | 97.3% / 0.20% |
+| | | High | 99.2% / 0.21% | 98.9% / 19.2% | 97.4% / 0.41% |
+| 20–49 | 1,779 / 30,891 | Low | 99.9% / 0.17% | 73.1% / 1.03% | 97.8% / 0.51% |
+| | | Medium | 99.9% / 0.41% | 90.9% / 4.04% | 98.5% / 0.70% |
+| | | High | 100.0% / 0.94% | 99.6% / 24.9% | 98.9% / 1.50% |
+| 50–199 | 1,703 / 28,497 | Low | 99.9% / 0.16% | 78.5% / 0.50% | 98.2% / 0.34% |
+| | | Medium | 99.9% / 0.48% | 90.6% / 3.28% | 98.7% / 0.69% |
+| | | High | 100.0% / 1.35% | 99.8% / 22.2% | 99.0% / 2.04% |
 | 200+ | 57 / 3,661 | Low | 96.5% / 0.00% | 96.5% / 0.00% | 96.5% / 0.00% |
 | | | Medium | 100.0% / 0.027% | 96.5% / 5.74% | 100.0% / 0.74% |
 | | | High | 100.0% / 0.36% | 100.0% / 7.05% | 100.0% / 1.72% |
@@ -129,10 +133,9 @@ and in upper case).
 
 One cell depends on the repetition junk, which corpus v1 gained during the review of the
 framework PR: at 10–19 characters and Low, 6.0 has 17 false positives against Ciphey's
-checker's 19; without the 53 repetition samples of that bucket it is 17 against 15 (of
-15,696), with 830 against 815 of the 844 texts accepted. That is the only cell where 6.0
-accepts more junk than a baseline on some subset of the categories that make up the
-bucket; per category, see below.
+checker's 18; without the 83 repetition samples of that bucket it is 17 against 15 (of
+15,696), with 830 against 815 of the 844 texts accepted. Every other cell holds with and
+without them.
 
 ### Positives (test; recall at Low / Medium / High)
 
@@ -162,7 +165,7 @@ positives in the 1–9 bucket against 6.0's 4.
 | vigenere_opt_quadgram | 145 | 2.1% / 2.1% / 5.5% | 0% / 4.8% / 50.3% | 1.4% / 3.4% / 4.8% |
 | vigenere_opt_bigram | 149 | 0.67% / 2.7% / 6.0% | 0% / 8.1% / 52.3% | 0% / 0.67% / 3.4% |
 | railfence (wrong key) | 9,942 | 0.46% / 1.6% / 4.5% | 0.32% / 3.2% / 61.5% | 0.15% / 0.24% / 0.67% |
-| repetition (`NO NO NO NO`, `INININ`, `zzzz`) | 271 | 0% / 0% / 0% | 9.6% / 11.1% / 26.9% | 11.4% / 11.4% / 25.8% |
+| repetition (`NO NO NO NO`, `INININ`, `zzzz`, `AAAAAAAAAAAAAAAAAAAAAQ==`) | 419 | 0% / 0% / 0% | 5.7% / 7.6% / 18.6% | 6.7% / 6.7% / 16.7% |
 | reversed | 8,066 | 0.12% / 0.35% / 0.73% | 1.5% / 10.3% / 46.6% | 0.087% / 0.29% / 0.84% |
 | columnar (wrong key) | 5,932 | 0.067% / 0.13% / 0.30% | 0.32% / 2.9% / 49.8% | 0.051% / 0.084% / 0.30% |
 | unicode_shift (CJK, Hangul) | 1,991 | 0.40% / 0.50% / 0.55% | 0% / 0% / 0.45% | 0% / 0% / 0.15% |
@@ -191,20 +194,22 @@ Polish 3.1 / 5.3 / 8.6%, every time reported as `en`. Russian, Chinese, Japanese
 are rejected (under 1%). When a language's pack ships, its text gets its own language (gate
 4 of docs/languages.md); until then, an accepted French sentence says `en`.
 
-### Speed (dev split, 87,684 samples of up to 256 characters)
+### Speed (dev split, 87,835 samples of up to 256 characters)
 
 | | p50 | p99 | mean |
 |---|---:|---:|---:|
-| **gibberish-or-not 6, native** (any sensitivity: one score) | **855 ns** | **14.8 µs** | 1.9 µs |
-| junk only / language only | 735 ns / 2.0 µs | 9.9 µs / 20.4 µs | 1.5 µs / 3.4 µs |
-| **wasm32-unknown-unknown under node 24** (wasm-bindgen `score()`, string passing included) | 1.3 µs | 25.0 µs | 2.4 µs |
-| **wasm32-wasip1 under wasmtime 50** | 2.0 µs | 21.5 µs | 3.1 µs |
-| 5.0.7 `is_gibberish` @Medium (measured when the baselines were frozen) | 5.3 µs | 37.2 µs | 7.3 µs |
-| Ciphey's English checker @Medium (same) | 760 ns | 17.7 µs | 1.6 µs |
+| **gibberish-or-not 6, native** (any sensitivity: one score) | **1.0 µs** | **16.3 µs** | 2.2 µs |
+| junk only / language only | 865 ns / 2.3 µs | 11.1 µs / 22.4 µs | 1.8 µs / 3.9 µs |
+| **wasm32-unknown-unknown under node 24** (wasm-bindgen `score()`, string passing included) | 1.5 µs | 27.6 µs | 2.8 µs |
+| **wasm32-wasip1 under wasmtime 50** | 2.4 µs | 24.0 µs | 3.6 µs |
+| 5.0.7 `is_gibberish` @Medium (measured when the baselines were frozen) | 5.6 µs | 39.4 µs | 7.8 µs |
+| Ciphey's English checker @Medium (same) | 810 ns | 19.1 µs | 1.7 µs |
 
-The host is shared: its load average was about 50 during this run and when the baselines
+The host is shared: its load average was about 51 during this run and when the baselines
 were frozen, so absolute times can be several times lower on an idle machine. WASM is
-within 2.4× of native at p50 and 1.7× at p99.
+within 2.4× of native at p50 and 1.7× at p99. With the Spanish pilot pack added (two Latin
+packs), three alternating rounds gave 1.0 µs / 17.0–17.5 µs for English alone and 1.4 µs /
+26.1–27.6 µs for both, under the same load.
 
 The targets for all 13 languages are p50 ≤ 3 µs and p99 ≤ 30 µs (docs/languages.md, gate
 5). Scoring is linear in the number of candidate packs for the n-gram pass only: the word
@@ -215,8 +220,8 @@ model runs for the 3 best-ranked packs of the text's script.
 | | size | budget |
 |---|---:|---:|
 | `languages/en/model.bin` + `calibration.txt` | 956 KB | 1 MB |
-| WASM module with every default language, `cargo build --release` | 1,287 KB | |
-| after `wasm-opt -Oz` | 1,240 KB | 5.5 MB for all 13 |
+| WASM module with every default language, `cargo build --release` | 1,288 KB | |
+| after `wasm-opt -Oz` | 1,241 KB | 5.5 MB for all 13 |
 
 Dependencies: `phf` (the password list) and `once_cell` (`race`, no_std): 12 crates in
 `cargo tree -e normal` (the proc-macro's build-time crates included), against 195 for 5.0.7.
@@ -250,18 +255,18 @@ and after switching to 6.0 the way MIGRATION.md recommends (the dependency, and
 | Athena@Medium, held-out | 0.939, 139 | **0.971, 46** |
 | Athena@High, held-out | 0.902, 263 | **0.958, 89** |
 | English checker@Medium, held-out | 0.901, 133 | **0.933, 40** |
-| end to end, 296 searches: correct / wrong / missed, run 1 and run 2 | 270 / 25 / 1, 271 / 24 / 1 | 270 / 25 / 1, 271 / 24 / 1 |
-| Athena@Medium per check (median / p99), run 1 and run 2 | 4.8 / 20.5 µs, 4.6 / 20.0 µs | 5.2 / 21.0 µs, 4.6 / 19.0 µs |
+| end to end, 296 searches: correct / wrong / missed, run 1 and run 2 | 271 / 23 / 2, 268 / 27 / 1 | 271 / 24 / 1, 270 / 25 / 1 |
+| Athena@Medium per check (median / p99), run 1 and run 2 | 5.0 / 21.9 µs, 4.3 / 18.3 µs | 4.7 / 19.2 µs, 4.7 / 19.1 µs |
 | `cargo tree -e normal --prefix none \| sort -u \| wc -l` | 356 | **206** |
 
 The checker numbers are deterministic. End to end the result is the same within the
 run-to-run spread (268–272 correct in all the runs of either version): the cases that move
 between runs are searches with no answer that time out. Per check, no difference beyond
-noise (load average about 51 during the runs).
+noise (load average 44–50 during the runs).
 
 ## How often the test split was run
 
-The test split is for reporting. Model version 6.0.0 was run on it five times; every change
+The test split is for reporting. Model version 6.0.0 was run on it six times; every change
 between runs was made and checked on dev only, and the numbers above are from the last run.
 Looking at the test split more than once makes it less of a clean held-out set: corpus v2
 will have a fresh test split, and every later model version gets one test run, reported in
@@ -287,5 +292,14 @@ its PR.
    generator gave each split different kinds of repetition junk (a bug: kind and split
    both followed the sample number). Fixed in the corpus; the model was unchanged (the
    refit gave a byte-identical calibration).
-5. The same model on the fixed corpus: the numbers above. Only the repetition junk
-   changed, and with it the baselines' false positives.
+5. The same model on the fixed corpus: Low 97.0% / 0.13%, Medium 98.6% / 0.33%, High
+   98.9% / 0.81%. Then the second review: near-repetitions (base64 of mostly-zero
+   buffers, `AAAAAAAAAAAAAAAAAAAAAQ==`) passed at Low; identifiers glued to CJK text
+   (`密码hunter2`) counted as words; one odd-cased Latin name vetoed a CJK sentence. And
+   the Spanish pilot pack showed that packs near the best rank segmented tokens while
+   others didn't, which made their features differ from the ones `fit` calibrated on
+   (English recall fell when es was added). Changes: a veto for one letter making up three
+   quarters of a text, near-repetition junk in the corpus, glued identifiers neutral,
+   the odd-case veto only for mostly-cased text, every scored pack computing its full
+   features (and only packs within 0.3 of the best rank scored).
+6. The numbers above.

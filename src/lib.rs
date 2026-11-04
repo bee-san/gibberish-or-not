@@ -75,12 +75,15 @@ pub use pack::{Pack, PackError};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use once_cell::race::OnceBox;
 
-/// How many languages of one script are scored in full (see [`Detector::detect`]).
+/// How many languages of one script are scored in full, at most (see [`Detector::detect`]).
 const TOP_K: usize = 3;
 /// Texts with fewer letters are scored in full by every language of their script.
 const ALL_PACKS_BELOW_LETTERS: u32 = 12;
-/// Only languages whose n-gram rank is this close to the best split long tokens into words.
-const SEGMENT_RANK_WINDOW: f32 = 0.15;
+/// Of those, only languages whose n-gram rank is this close to the best are scored: the
+/// others are far from the text's language (measured with the pilot packs, en and es: the
+/// window cut the shared dev false positives at High by a quarter for 0.1 point of
+/// Spanish recall).
+const RANK_WINDOW: f32 = 0.3;
 
 /// How readily text is accepted as language. `Low` is the strictest level and `High` the
 /// most lenient (as in 5.x; see [PR #9](https://github.com/bee-san/gibberish-or-not/pull/9)).
@@ -234,17 +237,17 @@ impl Detector {
                 (rank >= p.calibration.gate).then_some((&**p, ng, rank))
             })
             .collect();
-        if candidates.len() > TOP_K && a.letters >= ALL_PACKS_BELOW_LETTERS {
+        if candidates.len() > 1 && a.letters >= ALL_PACKS_BELOW_LETTERS {
             candidates.sort_by(|x, y| y.2.total_cmp(&x.2));
             candidates.truncate(TOP_K);
+            let top = candidates[0].2;
+            candidates.retain(|c| c.2 >= top - RANK_WINDOW);
         }
-        let top_rank = candidates
-            .iter()
-            .map(|c| c.2)
-            .fold(f32::NEG_INFINITY, f32::max);
         let mut best: Option<(f32, f32, Lang)> = None;
-        for (pack, ng, rank) in &candidates {
-            let s = model::score_from(pack, &a, ng, *rank >= top_rank - SEGMENT_RANK_WINDOW);
+        for (pack, ng, _) in &candidates {
+            // Every candidate is scored as `features` (and so `gib-bench fit`) scores it:
+            // a calibration only holds for features computed the same way
+            let s = model::score_from(pack, &a, ng, true);
             let better = match best {
                 None => true,
                 Some((score, margin, _)) => (s.score, s.margin) > (score, margin),
@@ -389,6 +392,38 @@ mod tests {
         assert!(!r.is_language);
         assert_eq!(r.language, None);
         assert_eq!(r.score, 0.0);
+    }
+
+    #[test]
+    fn odd_case_latin_in_cjk_is_not_a_veto() {
+        // One odd-cased name in a sentence of another script isn't decoder output
+        let a = text::analyze("我们公司的所有开发人员都在使用macOS系统工作");
+        assert!(!model::vetoed(&a));
+        let a = text::analyze("이 앱은 제가 매일 쓰는 ContentDB 프로그램입니다");
+        assert!(!model::vetoed(&a));
+        // but mostly-Latin odd case still is
+        let a = text::analyze("hHeREoUtHo 你");
+        assert!(model::vetoed(&a));
+    }
+
+    #[test]
+    fn near_repetitions_are_vetoed() {
+        for junk in [
+            "AAAAAAAAAAAAAAAAAAAAAQ==",
+            "AQAAAAAAAAAAAAAAAAAAAA==",
+            "aaaaaaaaaaaab",
+            "IIIIIIIIIIIIIIIIIQ",
+        ] {
+            assert!(model::vetoed(&text::analyze(junk)), "{junk}");
+        }
+        for text in [
+            "Mississippi",
+            "aardvark",
+            "The quick brown fox",
+            "banana bread",
+        ] {
+            assert!(!model::vetoed(&text::analyze(text)), "{text}");
+        }
     }
 
     #[test]

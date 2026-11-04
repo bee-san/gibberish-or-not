@@ -17,8 +17,9 @@ WASM-ready. Upgrading: MIGRATION.md.
   `test_sensitivity` are gone; `gibberish` (feature `cli`) replaces them. The hidden
   `download_with_progress_bar` re-export is gone.
 - `is_gibberish` decides differently (better: docs/benchmark.md). Space-less text, short
-  phrases and text with identifiers in it are language; identifiers on their own, and
-  repeated letters or short words, are not. Many Latin-script sentences of languages
+  phrases and text with identifiers in it are language; identifiers on their own,
+  repeated letters or short words, and near-repetitions such as base64 of zero buffers,
+  are not. Many Latin-script sentences of languages
   whose packs haven't shipped are accepted as English (MIGRATION.md).
 
 ### Added
@@ -31,7 +32,7 @@ WASM-ready. Upgrading: MIGRATION.md.
   6.0.0; the other 12 languages land in 6.x under docs/languages.md.
 - `no_std` + `alloc` core, `wasm32-unknown-unknown` with default features, JavaScript
   bindings (feature `wasm`: `detect`, `score`, `isGibberish`, `isPassword`, `languages`).
-- The benchmark: corpus v1 (bench/corpus/v1, 53,531 positives in 13 languages, 231,889
+- The benchmark: corpus v1 (bench/corpus/v1, 53,531 positives in 13 languages, 232,349
   negatives, split by source), `gib-bench` (one command for every metric, the classifier
   fit, the CI gate, latency and sizes), frozen baseline verdicts of 5.0.7 and Ciphey's
   English checker.

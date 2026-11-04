@@ -45,7 +45,7 @@ Upgrading from 5.x: [MIGRATION.md](MIGRATION.md) (`is_gibberish`, `is_password` 
 ## How good is it
 
 On the frozen benchmark corpus (bench/corpus/v1, test split: 5,026 English texts of every
-kind and 90,616 pieces of junk: wrong cipher keys, near-English Vigenère key-search output,
+kind and 90,764 pieces of junk: wrong cipher keys, near-English Vigenère key-search output,
 encodings, hashes, random strings, repetitions, mojibake, real candidates from Ciphey's
 searches),
 against gibberish-or-not 5.0.7 and against 5.0.7 plus everything Ciphey's English checker
@@ -53,17 +53,18 @@ adds to it today:
 
 | | Low: recall / false positives | Medium | High |
 |---|---|---|---|
-| **gibberish-or-not 6.0** | **97.0% / 0.13%** | **98.6% / 0.33%** | **98.9% / 0.81%** |
-| 5.0.7 | 70.9% / 0.65% | 84.1% / 3.09% | 92.1% / 19.2% |
-| 5.0.7 + Ciphey's English checker | 95.3% / 0.31% | 97.0% / 0.54% | 97.3% / 1.30% |
+| **gibberish-or-not 6.0** | **97.0% / 0.13%** | **98.6% / 0.33%** | **98.9% / 0.80%** |
+| 5.0.7 | 70.9% / 0.65% | 84.1% / 3.08% | 92.1% / 19.1% |
+| 5.0.7 + Ciphey's English checker | 95.3% / 0.30% | 97.0% / 0.53% | 97.3% / 1.30% |
 
-It beats both in every length bucket and at every sensitivity (docs/benchmark.md has the
-tables, and how often the test split was looked at).
+In every length bucket and at every sensitivity it has a higher recall at an equal or lower
+false-positive rate than both, or ties with them where all are at the top (docs/benchmark.md
+has the tables, and how often the test split was looked at).
 
 Per length, kind of text and kind of junk, the speed, the sizes and how to reproduce every
 number: [docs/benchmark.md](docs/benchmark.md). In short:
 
-- **Speed**: median 0.9 µs and 99th percentile 15 µs per check (inputs up to 256
+- **Speed**: median 1.0 µs and 99th percentile 16 µs per check (inputs up to 256
   characters, on a shared busy host); WASM within 2.4× of native.
 - **Size**: the English pack is 956 KB; the whole WASM module after `wasm-opt -Oz` is
   1.2 MB.
@@ -100,7 +101,8 @@ short phrases included. Identifiers (numbers, URLs, email addresses, hashes, key
 flags) are neutral: they are left out and the rest decides, so `The password is
 IFukwKGsFW8MOq3IRFqrxE1hxTNEbUPR` is language and the password alone is not. Telling what
 an identifier is, is [pyWhat](https://github.com/bee-san/pyWhat)'s job. Repeated letters
-and repeated short words (`zzzz`, `NO NO NO NO`) are not language.
+and repeated short words (`zzzz`, `NO NO NO NO`, `AAAAAAAAAAAAAAAAAAAAAQ==`) are not
+language.
 
 ## How it works
 

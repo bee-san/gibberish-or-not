@@ -58,6 +58,8 @@ struct Args {
     write: bool,
     /// `sizes --check`: fail when over a budget.
     write_check: bool,
+    /// `fit --mode targets|budget` (default: targets for en, budget otherwise).
+    fit_mode: Option<String>,
     /// For latency estimates: this many extra copies of the first pack, under other codes.
     clones: usize,
 }
@@ -77,6 +79,7 @@ fn parse_args() -> Result<Args, String> {
         no_latency: false,
         write: false,
         write_check: false,
+        fit_mode: None,
         clones: 0,
     };
     let mut it = std::env::args().skip(1);
@@ -108,6 +111,7 @@ fn parse_args() -> Result<Args, String> {
             "--no-latency" => a.no_latency = true,
             "--write" => a.write = true,
             "--check" => a.write_check = true,
+            "--mode" => a.fit_mode = Some(val()?),
             "--clones" => a.clones = val()?.parse().map_err(|_| "bad --clones")?,
             "--fpr-scale" => a.fpr_scale = val()?.parse().map_err(|_| "bad --fpr-scale")?,
             "--l2" => a.l2 = val()?.parse().map_err(|_| "bad --l2")?,
@@ -1076,6 +1080,15 @@ fn cmd_fit(args: &Args) -> Result<(), String> {
         &dev,
         fit::Targets {
             scale: args.fpr_scale,
+            // English is the base pack: it sets the per-bucket targets every later pack
+            // shares; every other pack spends gate 2's budget (docs/languages.md)
+            mode: match args.fit_mode.as_deref() {
+                Some("targets") => fit::Mode::Targets,
+                Some("budget") => fit::Mode::Budget,
+                Some(other) => return Err(format!("--mode {other}: targets or budget")),
+                None if lang == Lang::En => fit::Mode::Targets,
+                None => fit::Mode::Budget,
+            },
         },
         args.l2,
     )?;
@@ -1114,8 +1127,7 @@ fn placeholder_calibration(lang: Lang) -> String {
 /// Per-language files, so the language PRs don't conflict.
 fn cmd_gate(args: &Args) -> Result<(), String> {
     const RECALL_TOLERANCE: f64 = 0.002;
-    const FPR_CEILING_FACTOR: f64 = 1.5;
-    const FPR_CEILING_SLACK: f64 = 0.0002;
+    use fit::{FPR_CEILING_FACTOR, FPR_CEILING_SLACK};
     let samples = corpus::load(&args.corpus, "dev")?;
     let det = Detector::new();
     let (ours, _) = our_system(&det, &samples);

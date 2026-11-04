@@ -30,7 +30,7 @@ text ──► analysis (one pass, language-independent)            src/text.rs
       ──► candidate packs: those of the text's majority script  src/lib.rs
       ──► each candidate: n-gram pass → rank; below its gate: out  src/model.rs
       ──► best 3 by rank (all, under 12 letters): word pass,
-           20 features, logistic logit, calibrated score         src/model.rs, src/pack.rs
+           22 features, logistic logit, calibrated score         src/model.rs, src/pack.rs
       ──► best score wins (ties: margin) → Detection { is_language, language, score }
 ```
 
@@ -39,7 +39,8 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   `prefix{...}` flag shape or 8+ hex letters is neutral. Other chunks are split into word
   tokens (letters, in-word apostrophes, combining marks; split at script changes, Han and
   kana together). In Han, kana and Hangul chunks a number is skipped rather than making the
-  whole chunk an identifier: a chunk there is a sentence (`他工作了6年`). It counts writing
+  whole chunk an identifier: a chunk there is a sentence (`他工作了6年`); a run of Latin
+  letters and digits glued to such text is still an identifier (`密码hunter2`). It counts writing
   punctuation, decoder symbols (`\^[]{}|~=<>%*+` and the backtick), other symbols, control
   characters, unbalanced brackets, letter variety and repeated words, and classifies each
   token's case: lower, upper, capitals that start lower-case runs (`GitHub`), an
@@ -47,7 +48,9 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   (`hHeREoUtHo`). Only the first 4,096 bytes are looked at.
 - **Vetoes**: a control character other than tab and line breaks (decoder bytes, never
   writing), no letters outside identifiers, odd case in more than a third of the cased
-  words (or in any of three or fewer), one letter repeated (`zzzz`, `A A A A`), or letters
+  words (or in any of three or fewer) when cased scripts are at least half the letters,
+  one letter repeated (`zzzz`, `A A A A`) or making up three quarters of 8 or more letters
+  (`AAAAAAAAAAAAAAAAAAAAAQ==`), or letters
   that repeat a unit of at most 6 letters three times (`INININ`, `and the and the and
   the`), or twice when the unit is two words or more (`is the is the`): score 0. These are
   what decoders make of repeated digits or bytes, and no weight could learn them from data
@@ -72,7 +75,7 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   (no spaces) are segmented in windows of 48 characters, with their own budget of 128. Unknown or rare tokens of text that is otherwise mostly words are checked for
   being one letter off by one from a much more frequent word (`romethinf`, `shem`): the
   signature of a cipher key with one wrong letter.
-- **Features** (20, in `pack::FEATURES`): bias; n-gram mean; known-letter coverage; word
+- **Features** (22, in `pack::FEATURES`): bias; n-gram mean; known-letter coverage; word
   score per letter; odd-case share; decoder-symbol, other-symbol and punctuation shares;
   foreign letters (of the pack's script but not its alphabet: words in other scripts are
   neutral); spaced or not; mean token length; identifier share; unbalanced brackets;
@@ -154,10 +157,14 @@ reader (`src/pack.rs`), and custom packs load at run time (`Pack::from_bytes`). 
 a `build.rs` that discovers `languages/*/` (implicit, and a stray directory would ship),
 per-language Rust modules (12 PRs editing shared code).
 
-**Top 3 by n-gram rank, then the full model**, not every pack: with 9 Latin-script
-languages, scoring all of them is 3× the time. The n-gram rank puts a text's own
-language first; the 3 best keep close languages (Spanish, Portuguese, Italian) all in the
-running; texts under 12 letters, where ranks are noisy, get all packs.
+**Top 3 by n-gram rank, within 0.3 of the best, then the full model**, not every pack:
+with 9 Latin-script languages, scoring all of them is 3× the time. The n-gram rank puts a
+text's own language first; the 3 best keep close languages (Spanish, Portuguese, Italian)
+in the running; texts under 12 letters, where ranks are noisy, get all packs. Every pack
+that is scored computes exactly the features `gib-bench fit` calibrated it on: an earlier
+version let only near-best packs segment long tokens, and the first pilot pack (es) showed
+that this broke English's calibration (English recall at 10–19 characters fell when es was
+added).
 
 **The CLI has no dependencies** (feature `cli`), instead of clap: the library pulls in
 nothing for it.

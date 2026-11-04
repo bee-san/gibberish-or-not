@@ -70,15 +70,25 @@ pub(crate) struct Scored {
 
 /// Why a text gets score 0 before any pack looks at it: control characters, no letters
 /// outside identifiers, words cased like no writing, one letter repeated (`zzzz`,
-/// `A A A A`), or letters that repeat a short unit (`INININ`, `and the and the and the`):
-/// what decoders make of repeated digits or bytes.
+/// `A A A A`) or making up three quarters of the letters (`AAAAAAAAAAAAAAAAAAAAAQ==`), or
+/// letters that repeat a short unit (`INININ`, `and the and the and the`): what decoders
+/// make of repeated digits or bytes.
 pub(crate) fn vetoed(a: &Analysis<'_>) -> bool {
+    // Odd case only counts where cased scripts are most of the text: one odd-cased Latin
+    // name (`macOS`, `TuRU`) in a Korean or Chinese sentence is the other script's business
+    let mostly_cased = a.cased_letters * 2 >= a.letters;
     a.controls > 0
         || a.letters == 0
-        || (a.odd_case > 0 && (a.odd_case * 3 > a.cased || a.cased <= 3))
+        || (mostly_cased && a.odd_case > 0 && (a.odd_case * 3 > a.cased || a.cased <= 3))
         || (a.cased_letters >= 3 && a.cased_letters == a.letters && a.distinct_cased == 1)
+        || (a.cased_letters >= DOMINANT_MIN_LETTERS && a.top_cased * 4 >= a.cased_letters * 3)
         || a.periodic
 }
+
+/// With at least this many letters of cased scripts, one letter making up 75% of them is a
+/// near-repetition, not writing: base64 or base32 of mostly-zero buffers
+/// (`AAAAAAAAAAAAAAAAAAAAAQ==`), `aaaaaaaab`.
+const DOMINANT_MIN_LETTERS: u32 = 8;
 
 /// Letter variety: different case-folded letters of cased scripts over the letters, up to
 /// this many letters (longer text uses more of the alphabet anyway).

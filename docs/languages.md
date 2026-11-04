@@ -96,6 +96,10 @@ build. A pack has:
 and per length bucket (characters of the text without identifiers) the logistic weights of
 the 22 features and the five anchors that map the logit to the score.
 
+Every pack that is scored computes the same features as `fit` used, whatever the other
+packs: the detector scores the (at most 3) packs of the text's script whose n-gram rank is
+within 0.3 of the best, each in full.
+
 ## Data and licences
 
 - **Shipped data** (counts and word lists in `model.bin`) only from public domain, CC0,
@@ -141,8 +145,8 @@ the 22 features and the five anchors that map the logit to the score.
 For a text, the language-independent pass finds its words, identifiers (neutral) and
 shape; the text's majority script picks the candidate packs. Every candidate runs its
 n-gram pass; a pack whose n-gram rank is below its calibrated gate drops out. Of the rest,
-the **3 best-ranked** (all of them for texts under 12 letters) get the word model and the
-classifier; only those within 0.15 of the best rank segment long tokens. The best
+the **3 best-ranked** that are within 0.3 of the best rank (all of them for texts under 12
+letters) get the word model and the classifier, each in full. The best
 calibrated score wins (ties by the logit's margin above the Low anchor), and `is_language`
 is that score against the sensitivity's threshold (0.9, 0.75, 0.5).
 
@@ -172,15 +176,37 @@ samples, a broken generator), report it to gib-lead with examples: a corrected c
 # the Ciphey program's agents: . /local/home/skerraut/herd-synth3/shared/ciphey/env.sh
 python3 languages/<code>/build.py                         # model.bin, build.json
 cargo build --release -p gib-bench
-cargo run --release -p gib-bench -- fit --lang <code>       # calibration.txt (train + dev)
+cargo run --release -p gib-bench -- fit --lang <code>       # calibration.txt (train + dev, budget mode)
 cargo build --release -p gib-bench                          # the pack is embedded: rebuild
 cargo run --release -p gib-bench -- --corpus v1 --split dev # tune on dev, as often as you like
 cargo run --release -p gib-bench -- gate                    # the CI gate, with every language
 ```
 
-`fit` takes `--fpr-scale <x>` (default 1): it multiplies the per-bucket false-positive
-targets of `bench/src/fit.rs` for your pack. Your pack's FPR on the shared junk is what
-counts against the budget, so expect to need a scale well below 1.
+### Calibration: `fit` spends gate 2's budget
+
+For every pack but English, `gib-bench fit` runs in **budget mode** (`--mode budget`, the
+default for every language but `en`). Per sensitivity, gate 2's allowance (below: 0.01,
+0.02 and 0.05 points of the dev split's negatives at Low, Medium and High: about 7, 14 and
+35 false positives on corpus v1) is one budget for all length buckets, spent where it buys
+the most of your language's dev recall. Junk that the packs already built in accept at
+that sensitivity costs nothing: it is a false positive already. Each bucket can spend at
+most its share under the per-bucket targets of `bench/src/fit.rs` (so the CI gate's
+ceilings hold), and a candidate threshold costs the larger of the false positives seen on
+dev and the tail model's estimate. `fit` prints, per sensitivity, how many new dev false
+positives the pack makes against the budget, a split-half check of it, and your dev recall.
+
+Build your pack with every pack already on main compiled in, and refit after rebasing
+onto a main that gained a language. `--fpr-scale` multiplies the budget (default 1).
+Leave it at 1 unless your measurements say otherwise, and say why in your README.
+
+English, the base pack, uses `--mode targets`: each bucket at its own targets, which
+define the shared per-bucket budget.
+
+Measured on the Spanish pilot pack (en + es on dev, before the pilot's own tuning): the
+old per-bucket targets spent most of gate 2's budget in buckets of 20+ characters, where
+Spanish recall was already 100%, and left a High recall of 91.7% within the budget. The
+budget mode spends 25 of 35 false positives at High, 9 of 14 at Medium and 4 of 7 at Low,
+with Spanish dev recall at 97.7%, 97.3% and 90.4%.
 
 Run the test split **once**, when your model is final, for the numbers in your PR (and
 say so; if you must run it again, say how many times and what changed in between):
@@ -201,7 +227,13 @@ unless it says test; put each table in your PR and README.
 3. **Your own junk**: the FPR of the negatives derived from your language at Medium <= 1%.
 4. **Confusion**: of your positives accepted at High, >= 90% are reported as your language;
    no other language's positives are reported as yours more than 3% of the time, and the
-   recall of every other shipped language drops by at most 0.2 points.
+   recall of every other shipped language drops by at most 0.2 points. "Other language"
+   and "shipped" mean **the packs on main when you land**: a language without a pack on
+   main doesn't count (until pt lands, es may claim Portuguese text). Every later pack
+   must pass gate 4 against every pack already on main: the pt agent has to win
+   Portuguese text from es, and es must not keep winning it. If the later pack can't win
+   on the n-gram score alone, the two agents fix it together in the later PR (ciphey-lead,
+   2026-11-04).
 5. **Latency** (`gib-bench latency`, all languages, same host, back to back with main): p50
    rises by at most 0.3 µs and p99 by at most 3 µs, and with all languages p50 <= 3 µs and
    p99 <= 30 µs for inputs of up to 256 characters.

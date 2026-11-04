@@ -1070,14 +1070,16 @@ def noise(corpus, english_texts):
 
 def repetitions(corpus):
     """Repeated letters and repeated short units, what decoders make of repeated digits or
-    bytes (`zzzzzzzz`, `NO NO NO NO`, `A A A A`, `abcabcabc`). Round-robin over the splits."""
+    bytes (`zzzzzzzz`, `NO NO NO NO`, `A A A A`, `abcabcabc`), and near-repetitions: one
+    letter with one or two others (`aaaaaaaab`), and base64 or base32 of mostly-zero
+    buffers (`AAAAAAAAAAAAAAAAAAAAAQ==`). Every kind in every split."""
     rng = rng_for("repetitions")
     upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     words = ["no", "of", "is", "it", "to", "a", "i", "on", "the", "and", "ha", "yes", "an", "in", "at"]
-    for i in range(900):
-        # Every split gets every kind (kind and split mustn't both follow i % 3)
+    kinds = 9
+    for i in range(150 * kinds):
         split = ("train", "dev", "test")[i % 3]
-        kind = (i // 3) % 6
+        kind = (i // 3) % kinds
         if kind == 0:
             text = rng.choice(upper) * rng.randint(3, 60)
         elif kind == 1:
@@ -1091,10 +1093,22 @@ def repetitions(corpus):
         elif kind == 4:
             a, b = rng.sample(words, 2)
             text = " ".join([a, b] * rng.randint(2, 10))
-        else:
+        elif kind == 5:
             unit = "".join(rng.choice(upper) for _ in range(rng.randint(1, 3)))
             text = " ".join([unit] * rng.randint(3, 20))
-        if rng.random() < 0.5:
+        elif kind == 6:
+            # One letter, 8-40 times, with one or two others inserted
+            chars = [rng.choice("AIEO" if rng.random() < 0.5 else upper)] * rng.randint(8, 40)
+            for _ in range(rng.randint(1, 2)):
+                chars.insert(rng.randint(0, len(chars)), rng.choice(upper))
+            text = "".join(chars)
+        else:
+            # base64 (kind 7) or base32 (kind 8) of 6-40 zero bytes and one or two others
+            buf = bytearray(rng.randint(6, 40))
+            for _ in range(rng.randint(1, 2)):
+                buf[rng.randrange(len(buf))] = rng.randint(1, 255)
+            text = (base64.b64encode if kind == 7 else base64.b32encode)(bytes(buf)).decode()
+        if kind < 7 and rng.random() < 0.5:
             text = text.lower()
         corpus.add(split, "neg", "-", "repetition", "noise:repetition", text)
 

@@ -7,9 +7,9 @@ sha256 of every input and output).
 
 | split | positives | negatives | info | used for |
 |---|---:|---:|---:|---|
-| train | 14,368 | 70,542 | 1,479 | fitting: each pack's classifier weights (`gib-bench fit`) |
-| dev | 17,292 | 70,731 | 1,449 | thresholds and calibration (`gib-bench fit`), every tuning run, the CI gate |
-| test | 21,871 | 90,616 | 1,979 | reporting only: run once per released model version |
+| train | 14,368 | 70,703 | 1,479 | fitting: each pack's classifier weights (`gib-bench fit`) |
+| dev | 17,292 | 70,882 | 1,449 | thresholds and calibration (`gib-bench fit`), every tuning run, the CI gate |
+| test | 21,871 | 90,764 | 1,979 | reporting only: run once per released model version |
 
 ## Format
 
@@ -92,7 +92,7 @@ Language-independent junk:
 | `hex_random`, `base64_random`, `base32_random`, `binary_random`, `hash`, `uuid` | encodings of random bytes, hashes of random words |
 | `rand_bytes`, `rand_bytes_lossy`, `utf16_random`, `utf16le_as_latin1`, `ascii_as_utf16` | bytes read as Latin-1, UTF-8 (lossy) or UTF-16 |
 | `rand_cjk`, `rand_hangul`, `rand_kana`, `rand_cyrillic`, `rand_latin_ext`, `base65536` | random letters of other scripts, and code points from Base65536's blocks |
-| `repetition` | one letter repeated, a unit of 2–3 letters repeated, repeated letters or short words with spaces (`zzzz`, `ININ`, `A A A A`, `NO NO NO`, `and the and the`) |
+| `repetition` | one letter repeated, a unit of 2–3 letters repeated, repeated letters or short words with spaces (`zzzz`, `ININ`, `A A A A`, `NO NO NO`, `and the and the`), one letter with one or two others (`aaaaaaab`), base64 and base32 of mostly-zero buffers |
 
 ## Info (`info`: reported, never counted)
 

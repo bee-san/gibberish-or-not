@@ -236,11 +236,35 @@ pub const OWN_JUNK_MIN: usize = 500;
 /// The gate sits this far (in rank units: log10 per letter) below the lowest positive.
 pub const GATE_MARGIN: f32 = 0.3;
 
-/// Sensitivity targets: a multiplier on [`targets`] (1 for the shipped calibration).
+/// How a pack's thresholds are set (docs/languages.md, "Calibration").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Each length bucket at its own junk false-positive target ([`targets`]). For the
+    /// base pack, English, which defines those targets.
+    Targets,
+    /// One false-positive budget per sensitivity, gate 2's allowance ([`GATE2_RISE`]), spent
+    /// over all length buckets where it buys the most recall, counting only the junk that
+    /// the packs already built in don't accept, and capped per bucket below the CI gate's
+    /// ceilings. For every pack after the base one.
+    Budget,
+}
+
+/// Options of a fit: the mode, and a multiplier on its targets (Targets) or on its budget
+/// (Budget); 1 for a shipped calibration unless the pack's README says why not.
 #[derive(Clone, Copy, Debug)]
 pub struct Targets {
     pub scale: f64,
+    pub mode: Mode,
 }
+
+/// Gate 2 (docs/languages.md): the rise of the shared junk false-positive rate one pack may
+/// cause, as a share of all dev negatives, at High, Medium and Low.
+pub const GATE2_RISE: [f64; 3] = [0.0005, 0.0002, 0.0001];
+
+/// The CI gate's per-bucket junk FPR ceiling (bench/src/main.rs `cmd_gate`):
+/// `FPR_CEILING_FACTOR * target + FPR_CEILING_SLACK`.
+pub const FPR_CEILING_FACTOR: f64 = 1.5;
+pub const FPR_CEILING_SLACK: f64 = 0.0002;
 
 /// Negatives above a threshold below which the empirical quantile is used; with fewer, the
 /// tail is modelled.
@@ -311,6 +335,29 @@ fn tail_count(sorted_neg: &[f64], t: f64) -> f64 {
 /// positives). Real short words and junk that happens to be a word overlap in the
 /// shortest buckets, so an equal target per bucket would reject them all there.
 fn allocate(buckets: &[(Vec<f64>, Vec<f64>)], budget: f64) -> Vec<f64> {
+    allocate_with(buckets, budget, None, false)
+}
+
+/// Expected false positives at or above `t`: in conservative mode the larger of the
+/// observed count and the tail model, so that the budget is never exceeded on dev.
+fn cost(sorted_neg: &[f64], t: f64, conservative: bool) -> f64 {
+    let modelled = tail_count(sorted_neg, t);
+    if conservative {
+        let above = (sorted_neg.len() - sorted_neg.partition_point(|&z| z < t)) as f64;
+        modelled.max(above)
+    } else {
+        modelled
+    }
+}
+
+/// [`allocate`] with optional per-bucket caps (expected false positives) and the
+/// conservative cost.
+fn allocate_with(
+    buckets: &[(Vec<f64>, Vec<f64>)],
+    budget: f64,
+    caps: Option<&[f64]>,
+    conservative: bool,
+) -> Vec<f64> {
     // Per bucket: the k-th step accepts the k best positives
     let steps: Vec<Vec<(f64, f64)>> = buckets
         .iter()
@@ -323,9 +370,18 @@ fn allocate(buckets: &[(Vec<f64>, Vec<f64>)], budget: f64) -> Vec<f64> {
                 if p.get(k + 1).is_some_and(|&next| next == t) {
                     continue;
                 }
-                v.push((t, tail_count(neg, t)));
+                v.push((t, cost(neg, t, conservative)));
             }
             v
+        })
+        .collect();
+    // The last step each bucket may take under its cap
+    let last: Vec<usize> = steps
+        .iter()
+        .enumerate()
+        .map(|(b, v)| match caps {
+            Some(c) => v.iter().rposition(|&(_, fp)| fp <= c[b]).unwrap_or(0),
+            None => v.len() - 1,
         })
         .collect();
     let mut at = vec![0usize; buckets.len()];
@@ -341,7 +397,7 @@ fn allocate(buckets: &[(Vec<f64>, Vec<f64>)], budget: f64) -> Vec<f64> {
                 pos.iter().filter(|&&z| z >= v[k].0).count()
             };
             let p0 = pos_at(k0);
-            for k in k0 + 1..v.len() {
+            for k in k0 + 1..=last[b] {
                 let cost = (v[k].1 - fp0).max(1e-9);
                 let ratio = (pos_at(k) - p0) as f64 / cost;
                 if best.is_none_or(|(r, _, _, _)| ratio > r) {
@@ -385,147 +441,32 @@ pub struct FitReport {
 }
 
 /// Fits `lang`'s pack: weights on `train`, anchors on `dev`.
-pub fn fit(
-    pack: Pack,
-    train: &[Sample],
-    dev: &[Sample],
-    targets: Targets,
-    l2: f64,
-) -> Result<FitReport, String> {
-    let lang = pack.lang();
-    let names = Detector::feature_names();
-    let detector = Detector::empty().with_pack(pack);
-    let tr = examples(&detector, lang, train);
-    let dv = examples(&detector, lang, dev);
-    let mut lines = Vec::new();
-    let mut cal = String::new();
-    cal.push_str("gon-calibration 1\n");
-    cal.push_str(&format!("lang {}\n", lang.code()));
-    cal.push_str("features");
-    for f in names {
-        cal.push(' ');
-        cal.push_str(f);
-    }
-    cal.push('\n');
-    cal.push_str(&format!(
-        "# written by `gib-bench fit --lang {}`: weights from the train split (l2 {l2}), anchors from the dev split at the junk FPR targets of bench/src/fit.rs (x{})\n",
-        lang.code(),
-        targets.scale
-    ));
-    // The gate: below every train and dev positive's rank, with a margin
-    let min_pos = tr
-        .iter()
-        .chain(dv.iter())
-        .filter_map(|(e, _, _)| e.as_ref())
-        .filter(|e| e.y)
-        .map(|e| e.rank)
-        .fold(f32::INFINITY, f32::min);
-    let gate = if min_pos.is_finite() {
-        min_pos - GATE_MARGIN
-    } else {
-        f32::NEG_INFINITY
-    };
-    let gated_neg = dv
-        .iter()
-        .filter_map(|(e, _, _)| e.as_ref())
-        .filter(|e| !e.y && e.rank < gate)
-        .count();
-    let dev_neg = dv.iter().filter(|(_, y, _)| !y).count();
-    lines.push(format!(
-        "gate {gate:.3}: rejects {gated_neg} of {dev_neg} dev negatives without the word model"
-    ));
-    cal.push_str(&format!("gate {gate}\n"));
-    // Pass 1: weights per group of buckets, and every bucket's dev logits
-    struct Dev {
-        w: Vec<f64>,
-        pos: Vec<f64>,
-        neg: Vec<f64>,
-        own: Vec<f64>,
-        neg_total: usize,
-        own_total: usize,
-        /// The dev negatives in two halves (by sample order; gated ones as -inf)
-        halves: [Vec<f64>; 2],
-        train_pos: usize,
-        train_neg: usize,
-    }
-    let mut dev: Vec<Dev> = Vec::new();
-    for (b, &lo) in BUCKETS.iter().enumerate() {
-        let in_b = |e: &Example| bucket_of(e.chars) == b;
-        let group = group_of(lo);
-        let train_g: Vec<&Example> = tr
-            .iter()
-            .filter_map(|(e, _, _)| e.as_ref())
-            .filter(|e| group_of(e.chars) == group)
-            .collect();
-        let w = if train_g.is_empty() {
-            vec![0.0; names.len()]
-        } else {
-            logistic(&train_g, l2)
-        };
-        let logit = |e: &Example| -> f64 { e.x.iter().zip(&w).map(|(a, b)| a * b).sum() };
-        let mut d = Dev {
-            pos: Vec::new(),
-            neg: Vec::new(),
-            own: Vec::new(),
-            neg_total: 0,
-            own_total: 0,
-            halves: [Vec::new(), Vec::new()],
-            train_pos: tr
-                .iter()
-                .filter_map(|(e, _, _)| e.as_ref())
-                .filter(|e| in_b(e) && e.y)
-                .count(),
-            train_neg: tr
-                .iter()
-                .filter_map(|(e, _, _)| e.as_ref())
-                .filter(|e| in_b(e) && !e.y)
-                .count(),
-            w: Vec::new(),
-        };
-        // Negatives the pack doesn't apply to (no letters in its scripts, vetoed) are
-        // rejected by it whatever the threshold, and counted in no bucket.
-        let mut nth = 0usize;
-        for (e, y, is_own) in &dv {
-            let Some(e) = e else { continue };
-            if !in_b(e) {
-                continue;
-            }
-            let z = if e.rank < gate {
-                f64::NEG_INFINITY
-            } else {
-                logit(e)
-            };
-            if *y {
-                if z.is_finite() {
-                    d.pos.push(z);
-                }
-                continue;
-            }
-            d.neg_total += 1;
-            d.own_total += usize::from(*is_own);
-            d.halves[nth % 2].push(z);
-            nth += 1;
-            if z.is_finite() {
-                d.neg.push(z);
-                if *is_own {
-                    d.own.push(z);
-                }
-            }
-        }
-        d.pos.sort_by(f64::total_cmp);
-        d.neg.sort_by(f64::total_cmp);
-        d.own.sort_by(f64::total_cmp);
-        d.w = w;
-        dev.push(d);
-    }
+/// One bucket's weights and dev logits (see `fit`).
+struct Dev {
+    w: Vec<f64>,
+    pos: Vec<f64>,
+    neg: Vec<f64>,
+    own: Vec<f64>,
+    neg_total: usize,
+    own_total: usize,
+    /// The dev negatives in two halves (by sample order; gated ones as -inf)
+    halves: [Vec<f64>; 2],
+    train_pos: usize,
+    train_neg: usize,
+    /// The calibration's n-gram gate (the same for every bucket).
+    gate: f32,
+}
 
-    // Pass 2: thresholds (High, Medium, Low) per bucket. The short buckets (under
-    // SHORT_CHARS characters) share one budget per sensitivity, spent where it buys the
-    // most recall (`allocate`); the others meet their own targets.
-    let short: Vec<usize> = (0..BUCKETS.len())
-        .filter(|&b| BUCKETS[b] < SHORT_CHARS)
-        .collect();
-    let mut thresholds = vec![[f64::NEG_INFINITY; 3]; BUCKETS.len()];
+/// Mode::Targets: each bucket at its own targets; the short buckets (under SHORT_CHARS
+/// characters) share one budget per sensitivity, spent where it buys the most recall
+/// (`allocate`).
+fn targets_thresholds(
+    dev: &[Dev],
+    short: &[usize],
+    targets: Targets,
+    thresholds: &mut [[f64; 3]],
+    lines: &mut Vec<String>,
+) {
     for (b, &lo) in BUCKETS.iter().enumerate() {
         if short.contains(&b) {
             continue;
@@ -597,6 +538,263 @@ pub fn fit(
             tg[1] * targets.scale,
             tg[0] * targets.scale,
         ));
+    }
+}
+
+/// The packs built in, without `lang`'s: what a new pack's junk is measured against.
+fn detector_others(lang: Lang) -> Detector {
+    let others: Vec<Lang> = Detector::new().enabled().filter(|&l| l != lang).collect();
+    Detector::new().languages(&others)
+}
+
+/// Mode::Budget: per sensitivity, gate 2's allowance of new false positives on dev
+/// (`GATE2_RISE` of all dev negatives, times `targets.scale`), spent over all buckets where
+/// it buys the most recall. Negatives the other built-in packs already accept at that
+/// sensitivity cost nothing (they are false positives already). Each bucket may spend at
+/// most its Targets-mode allowance, and costs are the larger of the observed count and the
+/// tail model, so the budget holds on dev.
+#[allow(clippy::too_many_arguments)]
+fn budget_thresholds(
+    others: &Detector,
+    lang: Lang,
+    dev_samples: &[Sample],
+    dv: &[(Option<Example>, bool, bool)],
+    dev: &[Dev],
+    targets: Targets,
+    thresholds: &mut [[f64; 3]],
+    lines: &mut Vec<String>,
+) {
+    // The other packs' verdicts on the same samples, in the order of `examples`
+    let mut taken: Vec<[bool; 3]> = Vec::new();
+    for s in dev_samples {
+        match s.label {
+            Label::Pos if s.lang == lang.code() => {}
+            Label::Neg => {}
+            _ => continue,
+        }
+        let score = others.detect(&s.text).score;
+        // High, Medium, Low (the order of `targets`)
+        taken.push([score >= 0.5, score >= 0.75, score >= 0.9]);
+    }
+    assert_eq!(taken.len(), dv.len());
+    let n_all = dv.iter().filter(|(_, y, _)| !y).count();
+    for i in 0..3 {
+        let budget = GATE2_RISE[i] * n_all as f64 * targets.scale;
+        // Per bucket: positives, and the negatives not already taken by the other packs
+        let mut pairs: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
+        let mut caps: Vec<f64> = Vec::new();
+        for (b, &lo) in BUCKETS.iter().enumerate() {
+            let w = &dev[b].w;
+            let in_b = |e: &&Example| bucket_of(e.chars) == b;
+            let mut neg: Vec<f64> = dv
+                .iter()
+                .zip(&taken)
+                .filter(|((e, y, _), t)| !*y && !t[i] && e.as_ref().is_some_and(|e| in_b(&e)))
+                .filter_map(|((e, _, _), _)| e.as_ref())
+                .filter(|e| e.rank >= dev_gate(dev))
+                .map(|e| e.x.iter().zip(w).map(|(a, b)| a * b).sum::<f64>())
+                .collect();
+            neg.sort_by(f64::total_cmp);
+            pairs.push((dev[b].pos.clone(), neg));
+            caps.push(self::targets(lo)[i] * targets.scale.max(1.0) * dev[b].neg_total as f64);
+        }
+        let t = allocate_with(&pairs, budget, Some(&caps), true);
+        let mut new_fp = 0usize;
+        for (b, tb) in t.iter().enumerate() {
+            thresholds[b][i] = *tb;
+            new_fp += pairs[b].1.iter().filter(|&&z| z >= *tb).count();
+        }
+        // Split-half: allocate on one half of the negatives, count on the other
+        let mut half_fp = 0usize;
+        for h in 0..2 {
+            let halves: Vec<(Vec<f64>, Vec<f64>)> = pairs
+                .iter()
+                .map(|(pos, neg)| {
+                    (
+                        pos.clone(),
+                        neg.iter().copied().skip(h).step_by(2).collect(),
+                    )
+                })
+                .collect();
+            let th = allocate_with(
+                &halves,
+                budget / 2.0,
+                Some(&caps.iter().map(|c| c / 2.0).collect::<Vec<_>>()),
+                true,
+            );
+            for (b, tb) in th.iter().enumerate() {
+                half_fp += pairs[b]
+                    .1
+                    .iter()
+                    .skip(1 - h)
+                    .step_by(2)
+                    .filter(|&&z| z >= *tb)
+                    .count();
+            }
+        }
+        let accepted: usize = pairs
+            .iter()
+            .zip(&t)
+            .map(|((pos, _), tb)| pos.iter().filter(|&&z| z >= *tb).count())
+            .sum();
+        let total: usize = pairs.iter().map(|(pos, _)| pos.len()).sum();
+        lines.push(format!(
+            "budget {}: {new_fp} new dev false positives for a budget of {budget:.1} (split-half {half_fp}); dev recall of the pack {:.3}",
+            ["High", "Medium", "Low"][i],
+            ratio(accepted, total),
+        ));
+    }
+}
+
+/// The n-gram gate the calibration will have (the same as `fit` computes).
+fn dev_gate(dev: &[Dev]) -> f32 {
+    dev.first().map_or(f32::NEG_INFINITY, |d| d.gate)
+}
+
+pub fn fit(
+    pack: Pack,
+    train: &[Sample],
+    dev_samples: &[Sample],
+    targets: Targets,
+    l2: f64,
+) -> Result<FitReport, String> {
+    let lang = pack.lang();
+    let names = Detector::feature_names();
+    let detector = Detector::empty().with_pack(pack);
+    let tr = examples(&detector, lang, train);
+    let dv = examples(&detector, lang, dev_samples);
+    let mut lines = Vec::new();
+    let mut cal = String::new();
+    cal.push_str("gon-calibration 1\n");
+    cal.push_str(&format!("lang {}\n", lang.code()));
+    cal.push_str("features");
+    for f in names {
+        cal.push(' ');
+        cal.push_str(f);
+    }
+    cal.push('\n');
+    cal.push_str(&format!(
+        "# written by `gib-bench fit --lang {}`: weights from the train split (l2 {l2}), anchors from the dev split, mode {:?} x{}\n",
+        lang.code(),
+        targets.mode,
+        targets.scale
+    ));
+    // The gate: below every train and dev positive's rank, with a margin
+    let min_pos = tr
+        .iter()
+        .chain(dv.iter())
+        .filter_map(|(e, _, _)| e.as_ref())
+        .filter(|e| e.y)
+        .map(|e| e.rank)
+        .fold(f32::INFINITY, f32::min);
+    let gate = if min_pos.is_finite() {
+        min_pos - GATE_MARGIN
+    } else {
+        f32::NEG_INFINITY
+    };
+    let gated_neg = dv
+        .iter()
+        .filter_map(|(e, _, _)| e.as_ref())
+        .filter(|e| !e.y && e.rank < gate)
+        .count();
+    let dev_neg = dv.iter().filter(|(_, y, _)| !y).count();
+    lines.push(format!(
+        "gate {gate:.3}: rejects {gated_neg} of {dev_neg} dev negatives without the word model"
+    ));
+    cal.push_str(&format!("gate {gate}\n"));
+    // Pass 1: weights per group of buckets, and every bucket's dev logits
+    let mut dev: Vec<Dev> = Vec::new();
+    for (b, &lo) in BUCKETS.iter().enumerate() {
+        let in_b = |e: &Example| bucket_of(e.chars) == b;
+        let group = group_of(lo);
+        let train_g: Vec<&Example> = tr
+            .iter()
+            .filter_map(|(e, _, _)| e.as_ref())
+            .filter(|e| group_of(e.chars) == group)
+            .collect();
+        let w = if train_g.is_empty() {
+            vec![0.0; names.len()]
+        } else {
+            logistic(&train_g, l2)
+        };
+        let logit = |e: &Example| -> f64 { e.x.iter().zip(&w).map(|(a, b)| a * b).sum() };
+        let mut d = Dev {
+            pos: Vec::new(),
+            neg: Vec::new(),
+            own: Vec::new(),
+            neg_total: 0,
+            own_total: 0,
+            halves: [Vec::new(), Vec::new()],
+            train_pos: tr
+                .iter()
+                .filter_map(|(e, _, _)| e.as_ref())
+                .filter(|e| in_b(e) && e.y)
+                .count(),
+            train_neg: tr
+                .iter()
+                .filter_map(|(e, _, _)| e.as_ref())
+                .filter(|e| in_b(e) && !e.y)
+                .count(),
+            w: Vec::new(),
+            gate,
+        };
+        // Negatives the pack doesn't apply to (no letters in its scripts, vetoed) are
+        // rejected by it whatever the threshold, and counted in no bucket.
+        let mut nth = 0usize;
+        for (e, y, is_own) in &dv {
+            let Some(e) = e else { continue };
+            if !in_b(e) {
+                continue;
+            }
+            let z = if e.rank < gate {
+                f64::NEG_INFINITY
+            } else {
+                logit(e)
+            };
+            if *y {
+                if z.is_finite() {
+                    d.pos.push(z);
+                }
+                continue;
+            }
+            d.neg_total += 1;
+            d.own_total += usize::from(*is_own);
+            d.halves[nth % 2].push(z);
+            nth += 1;
+            if z.is_finite() {
+                d.neg.push(z);
+                if *is_own {
+                    d.own.push(z);
+                }
+            }
+        }
+        d.pos.sort_by(f64::total_cmp);
+        d.neg.sort_by(f64::total_cmp);
+        d.own.sort_by(f64::total_cmp);
+        d.w = w;
+        dev.push(d);
+    }
+
+    let mut thresholds = vec![[f64::NEG_INFINITY; 3]; BUCKETS.len()];
+    let short: Vec<usize> = (0..BUCKETS.len())
+        .filter(|&b| BUCKETS[b] < SHORT_CHARS)
+        .collect();
+    match targets.mode {
+        Mode::Targets => {
+            targets_thresholds(&dev, &short, targets, &mut thresholds, &mut lines);
+        }
+        Mode::Budget => {
+            budget_thresholds(
+                &detector_others(lang),
+                lang,
+                dev_samples,
+                &dv,
+                &dev,
+                targets,
+                &mut thresholds,
+                &mut lines,
+            );
+        }
     }
 
     // Anchors, the split-half check of the other buckets, and the report

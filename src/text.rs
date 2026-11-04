@@ -82,10 +82,11 @@ pub(crate) struct Analysis<'a> {
     /// the length the calibration buckets by, so identifiers don't move a text to another
     /// length bucket.
     pub content_chars: u32,
-    /// Letters of cased scripts (Latin, Cyrillic, Greek) in word tokens, and how many
-    /// different ones (case-folded; up to `VARIETY_CAP`).
+    /// Letters of cased scripts (Latin, Cyrillic, Greek) in word tokens, how many different
+    /// ones (case-folded), and how often the most frequent one occurs.
     pub cased_letters: u32,
     pub distinct_cased: u32,
+    pub top_cased: u32,
     /// Word tokens equal (case-folded) to one of the two before them: `NO NO NO NO`.
     pub repeats: u32,
     /// Whether the letters of the word tokens, case-folded and run together, repeat a unit
@@ -349,6 +350,7 @@ pub(crate) fn analyze(text: &str) -> Analysis<'_> {
         content_chars: 0,
         cased_letters: 0,
         distinct_cased: 0,
+        top_cased: 0,
         repeats: 0,
         periodic: false,
         script_letters: [0; script::COUNT],
@@ -407,6 +409,7 @@ pub(crate) fn analyze(text: &str) -> Analysis<'_> {
     a.unbalanced = square != 0 || curly != 0;
     a.content_chars = content_sum + content_chunks.saturating_sub(1);
     a.distinct_cased = variety.distinct;
+    a.top_cased = variety.top;
     a.repeats = count_repeats(&a);
     a.periodic = is_periodic(&a);
     a
@@ -447,41 +450,46 @@ fn is_periodic(a: &Analysis<'_>) -> bool {
     })
 }
 
-/// Different letters of cased scripts seen are counted up to this many.
-pub(crate) const VARIETY_CAP: u32 = 32;
-
-/// The different case-folded letters of cased scripts: a bit set for a–z, a short list for
-/// the others.
+/// The case-folded letters of cased scripts: counts for a–z and for up to 16 others, how
+/// many different ones, and the count of the most frequent.
 #[derive(Default)]
 struct Variety {
-    ascii: u32,
-    other: [u32; 16],
+    ascii: [u16; 26],
+    other: [(u32, u16); 16],
     n_other: usize,
     distinct: u32,
+    top: u32,
 }
 
 impl Variety {
     #[inline]
     fn add(&mut self, c: char) {
-        if self.distinct >= VARIETY_CAP {
-            return;
-        }
-        if c.is_ascii() {
-            let bit = 1u32 << (c.to_ascii_lowercase() as u32 - 'a' as u32);
-            if self.ascii & bit == 0 {
-                self.ascii |= bit;
+        let n = if c.is_ascii() {
+            let i = (c.to_ascii_lowercase() as u32 - 'a' as u32) as usize;
+            let slot = &mut self.ascii[i];
+            if *slot == 0 {
                 self.distinct += 1;
             }
-            return;
-        }
-        let u = c.to_lowercase().next().unwrap_or(c) as u32;
-        if !self.other[..self.n_other].contains(&u) {
-            if self.n_other < self.other.len() {
-                self.other[self.n_other] = u;
-                self.n_other += 1;
+            *slot = slot.saturating_add(1);
+            *slot
+        } else {
+            let u = c.to_lowercase().next().unwrap_or(c) as u32;
+            match self.other[..self.n_other].iter_mut().find(|e| e.0 == u) {
+                Some(e) => {
+                    e.1 = e.1.saturating_add(1);
+                    e.1
+                }
+                None => {
+                    self.distinct += 1;
+                    if self.n_other < self.other.len() {
+                        self.other[self.n_other] = (u, 1);
+                        self.n_other += 1;
+                    }
+                    1
+                }
             }
-            self.distinct += 1;
-        }
+        };
+        self.top = self.top.max(u32::from(n));
     }
 }
 
@@ -528,6 +536,11 @@ fn tokenize_chunk(
     variety: &mut Variety,
 ) {
     let s = &text[start..end];
+    // Inside a chunk of Han, kana or Hangul (a whole sentence: `is_neutral`), a run of ASCII
+    // letters and digits that has a digit is an identifier glued to the text (`密码hunter2`,
+    // a UUID next to Hangul): skipped, like a whole identifier chunk. A run of digits alone
+    // (`6年`) is skipped as a number below.
+    let mut skip_until = 0usize;
     let mut cur: Option<(usize, u16, u8, CaseState, bool)> = None; // start, letters, script, case, apostrophe
     let mut last_letter_end = start;
     let mut last_char: char = ' ';
@@ -535,6 +548,25 @@ fn tokenize_chunk(
     let mut iter = s.char_indices().peekable();
     while let Some((i, c)) = iter.next() {
         let at = start + i;
+        if i < skip_until {
+            continue;
+        }
+        if c.is_ascii_alphanumeric() && (i == 0 || !s.as_bytes()[i - 1].is_ascii_alphanumeric()) {
+            let run = s[i..].bytes().take_while(u8::is_ascii_alphanumeric).count();
+            let r = &s.as_bytes()[i..i + run];
+            if r.iter().any(u8::is_ascii_digit) && r.iter().any(u8::is_ascii_alphabetic) {
+                close(
+                    &mut cur,
+                    last_letter_end,
+                    last_char,
+                    chunk,
+                    a,
+                    &mut words_here,
+                );
+                skip_until = i + run;
+                continue;
+            }
+        }
         if c.is_alphabetic() {
             let sc = script::of(c);
             let compatible = |prev: u8| prev == sc || (prev | sc) == (script::HAN | script::KANA);
@@ -726,6 +758,10 @@ mod tests {
         assert_eq!(a.neutral_chunks, 0);
         // Latin chunks with digits are still identifiers
         assert_eq!(words("abc123 hello"), ["hello"]);
+        // and so are letter-and-digit runs glued to CJK text
+        assert_eq!(words("密码hunter2"), ["密码"]);
+        assert_eq!(words("パスワードpassword123です"), ["パスワード", "です"]);
+        assert_eq!(words("我用macOS开发"), ["我用", "macOS", "开发"]);
     }
 
     #[test]

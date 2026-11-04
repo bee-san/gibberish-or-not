@@ -59,3 +59,14 @@ fn latin_text_is_not_this_packs() {
     assert!(detector().features("hello world").is_empty());
     assert_eq!(detector().detect("hello world").score, 0.0);
 }
+
+#[test]
+fn segmentation_gate_is_in_rank_units() {
+    // The fixture's rank offset is 2.0, so its segmentation gate is
+    // -1.45 - (2.0 - log10 26) = -2.03 per character. This run of words has a mean n-gram
+    // log10 P of about -1.67: above that gate, below the 26-letter value (-1.45) and far
+    // below the gate shifted the wrong way (-0.87). Only the right gate segments it.
+    let (coverage, ngram, _) = features("我们天气明天");
+    assert!(ngram > -2.03 && ngram < -1.45, "{ngram}");
+    assert!((coverage - 1.0).abs() < 1e-6, "coverage {coverage}");
+}

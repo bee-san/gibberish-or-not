@@ -56,4 +56,4 @@ Corpus v1, English positives against all junk; full tables in docs/benchmark.md.
 | split | Low recall / FPR | Medium | High |
 |---|---|---|---|
 | dev | 96.3% / 0.076% | 98.8% / 0.23% | 99.0% / 0.58% |
-| test | 97.0% / 0.13% | 98.6% / 0.33% | 98.9% / 0.81% |
+| test | 97.0% / 0.13% | 98.6% / 0.33% | 98.9% / 0.80% |
