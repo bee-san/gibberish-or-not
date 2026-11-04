@@ -172,7 +172,7 @@ The library provides three sensitivity levels:
 ### High Sensitivity
 - Most lenient classification
 - Easily accepts text as English
-- Best for minimizing false positives
+- Best for minimizing false negatives (English classified as gibberish)
 - Use when: You want to catch anything remotely English-like
 
 ### Medium Sensitivity (Default)
@@ -287,7 +287,7 @@ The algorithm includes fast-path decisions:
 
 1. If English word ratio > 0.8: Not gibberish
 2. If ≥ 3 English words (Medium/High sensitivity): Not gibberish
-3. If no English words AND transition score < 0.3 (Low/Medium): Gibberish
+3. If no English words AND transition score < 0.4 (Low/Medium): Gibberish
 
 ### Why These Weights?
 
