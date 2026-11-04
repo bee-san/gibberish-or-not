@@ -13,11 +13,14 @@ use wasm_bindgen::prelude::*;
 
 use crate::{default_detector, Detector, Sensitivity};
 
-fn sensitivity(name: &str) -> Sensitivity {
-    match name {
-        "low" | "Low" => Sensitivity::Low,
-        "high" | "High" => Sensitivity::High,
-        _ => Sensitivity::Medium,
+fn sensitivity(name: Option<String>) -> Result<Sensitivity, JsError> {
+    match name.as_deref() {
+        None | Some("medium") | Some("Medium") => Ok(Sensitivity::Medium),
+        Some("low") | Some("Low") => Ok(Sensitivity::Low),
+        Some("high") | Some("High") => Ok(Sensitivity::High),
+        Some(other) => Err(JsError::new(&alloc::format!(
+            "unknown sensitivity {other:?}: use \"low\", \"medium\" or \"high\""
+        ))),
     }
 }
 
@@ -49,17 +52,17 @@ impl JsDetection {
 }
 
 /// Detects `text` with every built-in language at `sensitivity` ("low", "medium" or
-/// "high"; default "medium").
+/// "high"; default "medium"; anything else throws).
 #[wasm_bindgen]
-pub fn detect(text: &str, sensitivity_name: Option<String>) -> JsDetection {
-    let s = sensitivity(sensitivity_name.as_deref().unwrap_or("medium"));
+pub fn detect(text: &str, sensitivity_name: Option<String>) -> Result<JsDetection, JsError> {
+    let s = sensitivity(sensitivity_name)?;
     let (score, lang) = default_detector().best(text);
     let is_language = score >= s.min_score();
-    JsDetection {
+    Ok(JsDetection {
         is_language,
         language: lang.filter(|_| is_language).map(|l| String::from(l.code())),
         score,
-    }
+    })
 }
 
 /// The calibrated score of `text` in [0, 1] (0.5, 0.75, 0.9: High, Medium, Low accept),
@@ -69,13 +72,11 @@ pub fn score(text: &str) -> f32 {
     default_detector().best(text).0
 }
 
-/// Whether `text` is not natural language at `sensitivity` ("low", "medium", "high").
+/// Whether `text` is not natural language at `sensitivity` ("low", "medium" or "high";
+/// default "medium"; anything else throws).
 #[wasm_bindgen(js_name = isGibberish)]
-pub fn is_gibberish(text: &str, sensitivity_name: Option<String>) -> bool {
-    crate::is_gibberish(
-        text,
-        sensitivity(sensitivity_name.as_deref().unwrap_or("medium")),
-    )
+pub fn is_gibberish(text: &str, sensitivity_name: Option<String>) -> Result<bool, JsError> {
+    Ok(crate::is_gibberish(text, sensitivity(sensitivity_name)?))
 }
 
 /// Whether `text` is a common password.

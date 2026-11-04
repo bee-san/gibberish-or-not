@@ -74,6 +74,7 @@ EN_TEST = [1342, 161, 158, 98, 64317, 1250, 26184, 67098]
 EN_EXTRA_TRAIN = 300
 # Other languages: picked from the catalog with a fixed seed (see pick_books).
 BOOKS_PER_LANGUAGE = 24
+COPYRIGHTED = b"COPYRIGHTED Project Gutenberg"
 # Grady Ward's Moby word lists (public domain; Gutenberg ebook 3201): spelling lists that
 # fill in rare words the training books don't have.
 MOBY_URL = "https://www.gutenberg.org/files/3201/files/{name}"
@@ -224,13 +225,22 @@ def main():
             missing = []
             for code, ids in books.items():
                 for n in ids:
+                    rel = f"{GUTENBERG_DIR}/pg{n}.txt"
                     try:
-                        fetch(args.cache, manifest, f"{GUTENBERG_DIR}/pg{n}.txt", GUTENBERG_URL.format(n=n),
-                              "public domain in the USA (Project Gutenberg)", f"Gutenberg ebook {n} ({code})")
+                        path = fetch(args.cache, manifest, rel, GUTENBERG_URL.format(n=n),
+                                     "public domain in the USA (Project Gutenberg)", f"Gutenberg ebook {n} ({code})")
                     except urllib.error.HTTPError as e:
                         if e.code != 404:
                             raise
                         missing.append(n)
+                        continue
+                    # A few Gutenberg ebooks are copyrighted ("This is a COPYRIGHTED Project
+                    # Gutenberg eBook"): never used, for shipping or for evaluation
+                    with open(path, "rb") as f:
+                        head = f.read(8000)
+                    if COPYRIGHTED in head:
+                        missing.append(n)
+                        manifest["files"][rel]["licence"] = "COPYRIGHTED: excluded from every list"
             # Books without a plain-text file are left out of every list
             for key, ids in manifest["gutenberg_books"].items():
                 manifest["gutenberg_books"][key] = [n for n in ids if n not in missing]

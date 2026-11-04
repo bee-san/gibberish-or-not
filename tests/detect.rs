@@ -1,7 +1,7 @@
 //! Behaviour of the public API with the built-in packs.
 
 use gibberish_or_not::{
-    detect, is_gibberish, is_password, Detection, Detector, Lang, Pack, Sensitivity,
+    detect, is_gibberish, is_password, is_word, Detection, Detector, Lang, Pack, Sensitivity,
 };
 
 const ENGLISH: &[&str] = &[
@@ -189,6 +189,79 @@ fn odd_inputs_dont_panic() {
     for text in &inputs {
         let d: Detection = detect(text);
         assert!((0.0..=1.0).contains(&d.score), "{}", d.score);
+    }
+}
+
+#[test]
+fn multi_line_text() {
+    for text in [
+        "Roses are red,\nViolets are blue,\nSugar is sweet,\nAnd so are you.",
+        "Dear Bob,\r\n\r\nThe meeting is moved to Thursday.\r\nRegards, Alice",
+        "line one of the message\n\tand an indented second line",
+    ] {
+        assert!(Detector::new().detect(text).is_language, "{text:?}");
+    }
+}
+
+#[test]
+fn long_text_is_cut_at_a_character_boundary() {
+    // 3- and 4-byte characters across the 4,096-byte cut
+    for unit in ["€", "😀", "a€", "ab😀", "日本"] {
+        let text = unit.repeat(5000);
+        let d = detect(&text);
+        assert!((0.0..=1.0).contains(&d.score));
+        let mixed = format!(
+            "{}{}",
+            "The quick brown fox. ".repeat(190),
+            unit.repeat(100)
+        );
+        let _ = detect(&mixed);
+    }
+}
+
+#[test]
+fn words() {
+    for w in ["decode", "Cryptography", "don't", "a", "I", "exuberant"] {
+        assert!(is_word(w), "{w}");
+    }
+    // Runs of one letter are never words (they were URL fragments and noise in the books)
+    for w in ["zzzz", "www", "iii", "aa", "xqzvkj", "", "  "] {
+        assert!(!is_word(w), "{w:?}");
+    }
+}
+
+#[test]
+fn repetitions_are_gibberish() {
+    for text in [
+        "zzzzzzzzzzzz",
+        "NO NO NO NO NO NO",
+        "A A A A A A",
+        "INININININININININ",
+        "and the and the and the",
+        "is the is the",
+    ] {
+        assert!(is_gibberish(text, Sensitivity::High), "{text}");
+    }
+    // but not writing that repeats a word
+    assert!(!is_gibberish(
+        "I am very very tired of this",
+        Sensitivity::Medium
+    ));
+}
+
+#[test]
+fn identifiers_dont_make_text_pass_more_easily() {
+    // Mostly identifiers and one word: no more language than the word alone (5.x and the
+    // first 6.0 candidate let the identifiers' characters make it look longer)
+    let alone = detect("lunch").score;
+    for text in [
+        "x9 7k 2b 4q lunch 9z 3m",
+        "W3 5h0uld h4v3 lunch 70g37h3r 50m3 71m3.",
+        "lunch 5f4dcc3b5aa765d61d8327deb882cf99",
+    ] {
+        let s = detect(text).score;
+        assert!(s <= alone + 1e-6, "{text}: {s} vs {alone}");
+        assert!(is_gibberish(text, Sensitivity::Low), "{text}");
     }
 }
 

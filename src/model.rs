@@ -68,12 +68,21 @@ pub(crate) struct Scored {
     pub margin: f32,
 }
 
-/// Why a text gets score 0 before any pack looks at it.
+/// Why a text gets score 0 before any pack looks at it: control characters, no letters
+/// outside identifiers, words cased like no writing, one letter repeated (`zzzz`,
+/// `A A A A`), or letters that repeat a short unit (`INININ`, `and the and the and the`):
+/// what decoders make of repeated digits or bytes.
 pub(crate) fn vetoed(a: &Analysis<'_>) -> bool {
     a.controls > 0
         || a.letters == 0
         || (a.odd_case > 0 && (a.odd_case * 3 > a.cased || a.cased <= 3))
+        || (a.cased_letters >= 3 && a.cased_letters == a.letters && a.distinct_cased == 1)
+        || a.periodic
 }
+
+/// Letter variety: different case-folded letters of cased scripts over the letters, up to
+/// this many letters (longer text uses more of the alphabet anyway).
+const VARIETY_LETTERS: u32 = 20;
 
 /// What the n-gram pass found: enough to rank the languages of a script, and the first
 /// features.
@@ -276,8 +285,9 @@ fn token_ngram(pack: &Pack, word: &str) -> f32 {
     }
 }
 
-/// The features, given the n-gram pass. `segment`: whether long unknown tokens may be split
-/// into words (only the best-ranked languages of a text do it: it is the costly part).
+/// The features, given the n-gram pass, and the text's length without identifiers (what
+/// the calibration buckets by). `segment`: whether long unknown tokens may be split into
+/// words (only the best-ranked languages of a text do it: it is the costly part).
 pub(crate) fn features_from(
     pack: &Pack,
     a: &Analysis<'_>,
@@ -400,8 +410,14 @@ pub(crate) fn features_from(
             0.0
         },
         near_miss as f32 / ntoks.max(1) as f32,
+        a.repeats as f32 / a.toks.len().max(1) as f32,
+        if a.cased_letters > 0 {
+            (a.distinct_cased as f32 / a.cased_letters.min(VARIETY_LETTERS) as f32).min(1.0)
+        } else {
+            1.0
+        },
     ];
-    (x, a.chars)
+    (x, a.content_chars)
 }
 
 /// The pack's verdict on `a`, given its n-gram pass.

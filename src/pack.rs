@@ -110,7 +110,7 @@ fn f32_at(b: &[u8], o: usize) -> f32 {
 // --------------------------------------------------------------------- calibration --
 
 /// The classifier's features, in the order of a calibration file's weights.
-pub(crate) const FEATURES: [&str; 20] = [
+pub(crate) const FEATURES: [&str; 22] = [
     "bias",
     "ngram",
     "coverage",
@@ -131,6 +131,8 @@ pub(crate) const FEATURES: [&str; 20] = [
     "unknown_tokens",
     "unknown_lower",
     "near_miss",
+    "repeats",
+    "variety",
 ];
 pub(crate) const N_FEATURES: usize = FEATURES.len();
 
@@ -384,11 +386,12 @@ impl Pack {
             return Err(PackError::BadMagic);
         }
         let n = u32_at(blob, 4) as usize;
-        let model = blob
-            .get(8..8 + n)
+        let rest = &blob[8..];
+        let model = rest
+            .get(..n)
             .ok_or(PackError::Truncated("container model"))?;
         let calibration =
-            core::str::from_utf8(&blob[8 + n..]).map_err(|_| PackError::Calibration(0))?;
+            core::str::from_utf8(&rest[n..]).map_err(|_| PackError::Calibration(0))?;
         Pack::from_parts(model, calibration)
     }
 
@@ -456,8 +459,10 @@ impl Pack {
             core::str::from_utf8(&b[6..8]).map_err(|_| PackError::Invalid("language code"))?;
         let lang = Lang::from_code(code).ok_or(PackError::Invalid("language code"))?;
         let scripts = b[8];
+        // Sizes below come from untrusted bytes: all arithmetic on them is checked, so a
+        // crafted pack is an error on 32-bit targets (wasm32) too, never a wrap-around
         let n_sections = u16_at(b, 10) as usize;
-        let table_end = 16 + 12 * n_sections;
+        let table_end = 16 + 12 * n_sections; // at most 16 + 12 * 65535: no overflow
         if b.len() < table_end {
             return Err(PackError::Truncated("section table"));
         }
@@ -467,8 +472,11 @@ impl Pack {
                 if &b[o..o + 4] == tag {
                     let off = u32_at(b, o + 4) as usize;
                     let len = u32_at(b, o + 8) as usize;
+                    let end = off
+                        .checked_add(len)
+                        .ok_or(PackError::Truncated("section"))?;
                     return b
-                        .get(off..off + len)
+                        .get(off..end)
                         .map(Some)
                         .ok_or(PackError::Truncated("section"));
                 }
@@ -550,7 +558,9 @@ impl Pack {
                         .checked_mul(alpha as usize)
                         .ok_or(PackError::Invalid("n-gram size"))?;
                     *offset = base(ng) + pos;
-                    pos += size;
+                    pos = pos
+                        .checked_add(size)
+                        .ok_or(PackError::Invalid("n-gram size"))?;
                 }
                 if pos > ng.len() {
                     return Err(PackError::Truncated("dense n-grams"));
@@ -605,7 +615,10 @@ impl Pack {
                 for (i, x) in logp.iter_mut().enumerate() {
                     *x = f32_at(s, 8 + 4 * i);
                 }
-                if n_buckets == 0 || s.len() < 72 + 32 * n_buckets as usize {
+                let slots = (n_buckets as usize)
+                    .checked_mul(32)
+                    .and_then(|x| x.checked_add(72));
+                if n_buckets == 0 || slots.is_none_or(|need| s.len() < need) {
                     return Err(PackError::Truncated("WORD slots"));
                 }
                 Some((base(s) + 72, n_buckets, logp))

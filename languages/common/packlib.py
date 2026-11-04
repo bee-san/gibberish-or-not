@@ -97,6 +97,38 @@ def gutenberg_body(path):
     return unicodedata.normalize("NFC", text)
 
 
+def letters_key(text):
+    """A text's letters, lower case: what makes two texts "the same" for leakage checks."""
+    return "".join(c.lower() for c in text if c.isalpha())
+
+
+def heldout_keys(root, code, version="v1"):
+    """`letters_key` of every dev and test positive of language `code` in the benchmark
+    corpus: drop training texts with these keys, so that no evaluation text (as written,
+    in upper case or without spaces) is in a pack's training data, even when another
+    contributor or book has it too."""
+    keys = set()
+    for split in ("dev", "test"):
+        path = os.path.join(root, "bench", "corpus", version, f"{split}.tsv")
+        with open(path, encoding="utf-8", newline="\n") as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t", 5)
+                if len(parts) == 6 and parts[1] == code and parts[2] == "pos":
+                    k = letters_key(parts[5])
+                    if len(k) >= 8:
+                        keys.add(k)
+    return keys
+
+
+def is_letter_run(word):
+    """A word that is one letter repeated (`zzzz`, `www`, `iii`): URL fragments, roman
+    numerals and noise in books, never evidence of language."""
+    letters = [c for c in word if c.isalpha()]
+    return len(letters) >= 2 and len(set(letters)) == 1
+
+
 def tatoeba_split(user):
     """The split of a Tatoeba contributor: the same function as bench/scripts/make_corpus.py."""
     import hashlib

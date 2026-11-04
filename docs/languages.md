@@ -93,8 +93,8 @@ build. A pack has:
   with `packlib`: a worked example of the hashed path.
 
 `calibration.txt` is written by `gib-bench fit` (don't edit it by hand): the n-gram gate,
-and per length bucket (characters) the logistic weights of the 20 features and the five
-anchors that map the logit to the score.
+and per length bucket (characters of the text without identifiers) the logistic weights of
+the 22 features and the five anchors that map the logit to the score.
 
 ## Data and licences
 
@@ -111,8 +111,12 @@ anchors that map the logit to the score.
 - **Train on the train split's sources only.** Never fit on the corpus's dev or test
   sources: the Gutenberg books `book_split` puts in dev or test, the Tatoeba contributors
   `packlib.tatoeba_split` puts in dev or test (use `packlib.tatoeba_train_texts`), and any
-  Wikipedia text. Extra sources you add are train sources by definition (the corpus's
-  dev and test slices don't contain them).
+  Wikipedia text. Then drop every training text whose letters are those of a dev or test
+  text (`packlib.heldout_keys`, as `languages/en/build.py` does): different contributors
+  write the same sentence. Extra sources you add are train sources by definition.
+- **Copyrighted Gutenberg ebooks** exist ("This is a COPYRIGHTED Project Gutenberg
+  eBook"): `fetch_sources.py` leaves them out of every list; check any book you add.
+- **No runs of one letter** in the word list (`packlib.is_letter_run`: `zzzz`, `www`).
 - **The data cache** (`$GON_DATA_DIR`, default the program's shared cache) is write-once:
   add files in a directory of your own (`<source>-<code>/`), never change others'. The
   corpus's sources (Tatoeba, Gutenberg, Wikipedia) are already there and listed in
@@ -165,7 +169,7 @@ samples, a broken generator), report it to gib-lead with examples: a corrected c
 ## Workflow
 
 ```sh
-. /local/home/skerraut/herd-synth3/shared/ciphey/env.sh
+# the Ciphey program's agents: . /local/home/skerraut/herd-synth3/shared/ciphey/env.sh
 python3 languages/<code>/build.py                         # model.bin, build.json
 cargo build --release -p gib-bench
 cargo run --release -p gib-bench -- fit --lang <code>       # calibration.txt (train + dev)
@@ -178,7 +182,8 @@ cargo run --release -p gib-bench -- gate                    # the CI gate, with 
 targets of `bench/src/fit.rs` for your pack. Your pack's FPR on the shared junk is what
 counts against the budget, so expect to need a scale well below 1.
 
-Run the test split **once**, when your model is final, for the numbers in your PR:
+Run the test split **once**, when your model is final, for the numbers in your PR (and
+say so; if you must run it again, say how many times and what changed in between):
 `cargo run --release -p gib-bench -- --corpus v1 --split test`.
 
 ## Gates (all must pass to ship)
@@ -205,6 +210,22 @@ unless it says test; put each table in your PR and README.
 
 A language that can't pass is left out, and its README (in your PR, or gib-lead's) says why,
 with the numbers.
+
+`gib-bench --corpus v1` prints everything the gates need: recall per language and
+category (gate 1), overall and per-bucket FPR (gate 2, run with and without `--langs` to
+leave your pack out), each language's own-junk FPR (gate 3, the table after the language
+table), the language confusion (gate 4), latency (gate 5) and sizes (gate 6).
+
+Things to know before you start:
+- The English pack already accepts much Latin-script text of other languages, labelled
+  `en` (docs/benchmark.md: at Medium 76% of French, 70% of Italian, 50% of German, 48% of
+  Spanish). Your pack must win those texts on the score (gate 4), so a confident pack for
+  your language matters more than a lenient one.
+- Turkish and Korean have no Gutenberg books in the cache; Tatoeba is there for every
+  language, and any public-domain or CC BY source you add is welcome.
+- Numbers inside Chinese, Japanese and Korean chunks are neutral (`他工作了6年`); the
+  rest of the chunk is scored.
+- Repetitions (`哈哈哈哈`, `NO NO NO NO`) are vetoed before any pack sees them.
 
 ## Tests
 

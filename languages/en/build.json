@@ -465,10 +465,6 @@
    "0faf773f12f3075010b9c476590fe7fde0269ccf297a07ed6f868bcc18dae100"
   ],
   [
-   "gutenberg/pg6527.txt",
-   "28bc2fc6b20cf826583d1cb03fd436ada370cc70949be218e1c9a494b57f7f13"
-  ],
-  [
    "gutenberg/pg6863.txt",
    "be76aba3c00c4ea72c042d30a422cb2a7f1e02596caf1715eb885fc4a945eb29"
   ],
@@ -841,10 +837,6 @@
    "f2edd36ffa779259d6f8f32f99fe551cbb2208c993c55fd07fc0779fc61e1cba"
   ],
   [
-   "gutenberg/pg29762.txt",
-   "27f4a7f3a2d9c3f9a4cb5572d3d84da63bdf161a567f7e1c1d4271b744a9d225"
-  ],
-  [
    "gutenberg/pg30371.txt",
    "c4ff23a3f8f0482fcc361783462b5ada9c70da4df21b9fbe9da8c4d702c9c788"
   ],
@@ -927,10 +919,6 @@
   [
    "gutenberg/pg34105.txt",
    "d99fdbeab8efda3d73d383daf92100c4ef419a68997dee5e9792d62705d27c30"
-  ],
-  [
-   "gutenberg/pg34329.txt",
-   "8bf99a87abcd1ffe5c0302156cd99a380a82bb3c14d7d72afc2339a9d26271a7"
   ],
   [
    "gutenberg/pg34536.txt",
@@ -1546,13 +1534,14 @@
   ]
  ],
  "tatoeba_sentences": 300000,
- "letters": 124200862,
- "tokens": 28463524,
- "distinct_words": 169677,
+ "tatoeba_dropped_as_dev_or_test_text": 691,
+ "letters": 123889786,
+ "tokens": 28395081,
+ "distinct_words": 169120,
  "words_kept": 115000,
- "words_from_books": 71922,
+ "words_from_books": 71793,
  "model_bytes": 975632,
- "model_sha256": "def69981cf58c16ec1cdcd4a925b87c040f64f2e08e59d11fb0859a2291d5529",
+ "model_sha256": "bf53e55297d47a2c636416d2cbd88ab4513e72fba4f630c43ca829e396d9a50b",
  "params": {
   "lambda": -2.0,
   "max_word_chars": 16,

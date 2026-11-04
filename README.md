@@ -45,22 +45,26 @@ Upgrading from 5.x: [MIGRATION.md](MIGRATION.md) (`is_gibberish`, `is_password` 
 ## How good is it
 
 On the frozen benchmark corpus (bench/corpus/v1, test split: 5,026 English texts of every
-kind and 90,345 pieces of junk: wrong cipher keys, near-English Vigenère key-search output,
-encodings, hashes, random strings, mojibake, real candidates from Ciphey's searches),
+kind and 90,616 pieces of junk: wrong cipher keys, near-English Vigenère key-search output,
+encodings, hashes, random strings, repetitions, mojibake, real candidates from Ciphey's
+searches),
 against gibberish-or-not 5.0.7 and against 5.0.7 plus everything Ciphey's English checker
 adds to it today:
 
 | | Low: recall / false positives | Medium | High |
 |---|---|---|---|
-| **gibberish-or-not 6.0** | **97.2% / 0.14%** | **98.7% / 0.36%** | **98.9% / 0.87%** |
-| 5.0.7 | 70.9% / 0.63% | 84.1% / 3.06% | 92.1% / 19.1% |
-| 5.0.7 + Ciphey's English checker | 95.3% / 0.27% | 97.0% / 0.51% | 97.3% / 1.23% |
+| **gibberish-or-not 6.0** | **97.0% / 0.13%** | **98.6% / 0.33%** | **98.9% / 0.81%** |
+| 5.0.7 | 70.9% / 0.65% | 84.1% / 3.09% | 92.1% / 19.2% |
+| 5.0.7 + Ciphey's English checker | 95.3% / 0.31% | 97.0% / 0.54% | 97.3% / 1.30% |
+
+It beats both in every length bucket and at every sensitivity (docs/benchmark.md has the
+tables, and how often the test split was looked at).
 
 Per length, kind of text and kind of junk, the speed, the sizes and how to reproduce every
 number: [docs/benchmark.md](docs/benchmark.md). In short:
 
-- **Speed**: median 0.7 µs and 99th percentile 14 µs per check (inputs up to 256
-  characters, on a shared busy host); WASM within 1.7× of native.
+- **Speed**: median 0.9 µs and 99th percentile 15 µs per check (inputs up to 256
+  characters, on a shared busy host); WASM within 2.4× of native.
 - **Size**: the English pack is 956 KB; the whole WASM module after `wasm-opt -Oz` is
   1.2 MB.
 - **5.x's BERT path** never loaded a model (bee-san/Ciphey#1031) and is gone, with its 96
@@ -70,8 +74,10 @@ number: [docs/benchmark.md](docs/benchmark.md). In short:
 
 English ships in 6.0.0. Spanish, French, German, Italian, Portuguese, Dutch, Polish,
 Turkish, Russian, Chinese, Japanese and Korean are built under one contract
-([docs/languages.md](docs/languages.md)) and ship in 6.x as they pass its gates. Each is
-a Cargo feature (`en`, `es`, ... `ko`), all on by default:
+([docs/languages.md](docs/languages.md)) and ship in 6.x as they pass its gates. Until a
+language's pack ships, text in it is gibberish or, for many Latin-script sentences
+(French, Italian, German, Spanish ...), accepted as English. Each language is a Cargo
+feature (`en`, `es`, ... `ko`), all on by default:
 
 ```toml
 gibberish-or-not = { version = "6", default-features = false, features = ["en"] }
@@ -83,9 +89,9 @@ Packs for other languages, or your own English, load at run time:
 ## Sensitivity
 
 `Low` is the strictest, `High` the most lenient. Each level is a fixed minimum score (0.9,
-0.75, 0.5), calibrated so that it accepts the same small share of junk at every text
-length (docs/benchmark.md has the targets). Ciphey checks its classical ciphers' best keys
-at Low and everything else at Medium.
+0.75, 0.5), calibrated per text length to accept a documented small share of junk (stricter
+for short text; docs/benchmark.md has the targets). Ciphey checks its classical ciphers'
+best keys at Low and everything else at Medium.
 
 ## What counts as language
 
@@ -93,7 +99,8 @@ Text in a supported language, in any case, with or without spaces between the wo
 short phrases included. Identifiers (numbers, URLs, email addresses, hashes, keys, CTF
 flags) are neutral: they are left out and the rest decides, so `The password is
 IFukwKGsFW8MOq3IRFqrxE1hxTNEbUPR` is language and the password alone is not. Telling what
-an identifier is, is [pyWhat](https://github.com/bee-san/pyWhat)'s job.
+an identifier is, is [pyWhat](https://github.com/bee-san/pyWhat)'s job. Repeated letters
+and repeated short words (`zzzz`, `NO NO NO NO`) are not language.
 
 ## How it works
 

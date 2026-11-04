@@ -1,9 +1,9 @@
 //! Is this text natural language, or gibberish?
 //!
 //! `gibberish-or-not` tells natural-language text apart from everything else: cipher and
-//! decoder output, encodings, hashes, random strings, mojibake. It answers for 13
-//! languages (one Cargo feature each, see `docs/languages.md`), reports which language,
-//! and gives a calibrated score. It is built for programs that check thousands of
+//! decoder output, encodings, hashes, random strings, mojibake. It reports which language
+//! and gives a calibrated score. It is built for 13 languages, one Cargo feature each
+//! (`docs/languages.md`); 6.0.0 ships English, and the others land in 6.x. It is built for programs that check thousands of
 //! candidates per second, such as [Ciphey](https://github.com/bee-san/Ciphey): a check is a
 //! few microseconds, the core is `no_std` + `alloc` with no OS, thread, file or network
 //! use, and it builds for `wasm32-unknown-unknown` with default features.
@@ -39,10 +39,10 @@
 //!
 //! # Scores and sensitivity
 //!
-//! The score is calibrated against the false-positive rate on junk, the same way in every
-//! length bucket and language: a text is accepted at [`Sensitivity::High`] from 0.5, at
-//! [`Sensitivity::Medium`] from 0.75 and at [`Sensitivity::Low`] from 0.9. The junk
-//! false-positive rate each level targets is in `docs/benchmark.md`.
+//! The score is calibrated against the false-positive rate on junk, per length bucket: a
+//! text is accepted at [`Sensitivity::High`] from 0.5, at [`Sensitivity::Medium`] from 0.75
+//! and at [`Sensitivity::Low`] from 0.9, and each level's junk false-positive target per
+//! length bucket is in `docs/benchmark.md` (stricter for short text).
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![forbid(unsafe_code)]
@@ -61,12 +61,15 @@ mod pack;
 mod passwords;
 mod registry;
 mod text;
-/// JavaScript bindings (feature `wasm`): `detect`, `isGibberish`, `isPassword`,
+/// JavaScript bindings (feature `wasm`): `detect`, `score`, `isGibberish`, `isPassword`,
 /// `languages`.
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
 pub use lang::{Lang, ISO_639_1};
+
+/// This crate's version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use pack::{Pack, PackError};
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -253,9 +256,9 @@ impl Detector {
         best.map_or((0.0, None), |(score, _, lang)| (score, Some(lang)))
     }
 
-    /// The classifier features of `text` for each language that applies, its length in
-    /// characters and the language's n-gram rank (for `gib-bench fit`; not a stable API).
-    /// Gates are not applied.
+    /// The classifier features of `text` for each language that applies, its length without
+    /// identifiers (what the calibration buckets by) and the language's n-gram rank (for
+    /// `gib-bench fit`; not a stable API). Gates are not applied.
     #[doc(hidden)]
     pub fn features(&self, text: &str) -> Vec<(Lang, Vec<f32>, u32, f32)> {
         let a = text::analyze(text);

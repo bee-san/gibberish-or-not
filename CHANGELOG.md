@@ -13,11 +13,13 @@ WASM-ready. Upgrading: MIGRATION.md.
   (bee-san/Ciphey#1031), and it brought in candle, tokenizers (with onig's C library),
   safetensors and reqwest (with openssl).
 - Removed `is_string_bad_quality` and `calculate_non_printable_ratio`.
-- The binaries `dictionary`, `is_gibberish`, `passwords`, `enhanced_detection`,
-  `test_sensitivity` and `download_model` are gone; `gibberish` (feature `cli`) replaces
-  them.
+- The binaries `dictionary`, `is_gibberish`, `passwords`, `enhanced_detection` and
+  `test_sensitivity` are gone; `gibberish` (feature `cli`) replaces them. The hidden
+  `download_with_progress_bar` re-export is gone.
 - `is_gibberish` decides differently (better: docs/benchmark.md). Space-less text, short
-  phrases and text with identifiers in it are language; identifiers on their own are not.
+  phrases and text with identifiers in it are language; identifiers on their own, and
+  repeated letters or short words, are not. Many Latin-script sentences of languages
+  whose packs haven't shipped are accepted as English (MIGRATION.md).
 
 ### Added
 
@@ -29,12 +31,14 @@ WASM-ready. Upgrading: MIGRATION.md.
   6.0.0; the other 12 languages land in 6.x under docs/languages.md.
 - `no_std` + `alloc` core, `wasm32-unknown-unknown` with default features, JavaScript
   bindings (feature `wasm`: `detect`, `score`, `isGibberish`, `isPassword`, `languages`).
-- The benchmark: corpus v1 (bench/corpus/v1, 53,589 positives in 13 languages, 231,251
+- The benchmark: corpus v1 (bench/corpus/v1, 53,531 positives in 13 languages, 231,889
   negatives, split by source), `gib-bench` (one command for every metric, the classifier
   fit, the CI gate, latency and sizes), frozen baseline verdicts of 5.0.7 and Ciphey's
   English checker.
+- `VERSION`; the JavaScript `detect` and `isGibberish` throw on an unknown sensitivity
+  name.
 - CI: fmt, clippy, tests, wasm32 build and wasm-bindgen tests under node, tests under
-  wasmtime, the accuracy gate and the size budget.
+  wasmtime (32-bit), the pack writer's self-test, the accuracy gate and the size budget.
 - docs/design.md, docs/benchmark.md, docs/languages.md, MIGRATION.md, NOTICE.
 
 ### Fixed

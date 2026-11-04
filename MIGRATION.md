@@ -47,9 +47,15 @@ their signatures and meaning.
   alone is gibberish to gibberish-or-not (ask pyWhat what it is).
 - Wrong cipher keys, near-English Vigenère key-search output, reversed text, encodings,
   hashes, random strings and mojibake are rejected far more often (on the benchmark's test
-  split, 5.0.7 accepted 19.1% of the junk at High, 6.0 accepts 0.87%).
-- Text in a language whose pack isn't compiled in is gibberish (5.x accepted some French,
-  German and Spanish by accident).
+  split, 5.0.7 accepted 19.2% of the junk at High, 6.0 accepts 0.81%).
+- Text in a language whose pack isn't compiled in: Russian, Chinese, Japanese and Korean
+  are rejected, but many Latin-script sentences read as English to the English pack and
+  are accepted, labelled `en`. On the benchmark's test split, at Medium, 6.0.0 accepts
+  75.8% of French, 69.5% of Italian, 50.3% of German, 47.8% of Spanish, 39.9% of
+  Portuguese and 32.2% of Dutch sentences, phrases and words (5.0.7: 58.5%, 49.8%, 42.1%,
+  38.5%; docs/benchmark.md). When a language's pack ships, its text gets its own language.
+- Repeated letters and repeated short words (`zzzz`, `NO NO NO NO`, `INININ`, `and the and
+  the and the`) are vetoed: gibberish at every sensitivity.
 - Text longer than 4,096 bytes is judged by its first 4,096.
 
 ## Ciphey's exact changes
@@ -82,17 +88,17 @@ dictionary lookup. Ask the word list:
  }
 ```
 
-With 1 and 2 (and nothing else), Athena@Medium's held-out F1 goes from 0.939 to 0.970
-(false positives 139 → 49, recall 96.8% → 97.4%), Athena@Low from 0.946 to 0.971 (96 → 37),
-and the end-to-end corpora from 268/296 to 271/296 correct (wrong answers 27 → 24). Ciphey's
-dependency graph shrinks from 356 to 206 lines of `cargo tree -e normal --prefix none |
-sort -u` (294 → 180 crate versions).
+With 1 and 2 (and nothing else), Athena@Medium's held-out F1 goes from 0.939 to 0.971
+(false positives 139 → 46), Athena@Low from 0.946 to 0.972 (96 → 33). End to end the
+result is unchanged within the run-to-run spread (270–271 of 296 correct for both, run
+alternately twice; docs/benchmark.md). Ciphey's dependency graph shrinks from 356 to 206
+lines of `cargo tree -e normal --prefix none | sort -u` (294 → 180 crate versions).
 
 **3. Optional: let gibberish-or-not decide** (`is_english` keeps only Ciphey's own vetoes:
 control characters and NATO code words, and returns `!is_gibberish(text, sensitivity)`).
-That gives the best checker numbers (Athena@Low held-out recall 98.2%, F1 0.979; Caesar
-`crack()` correct 91% → 94%, ROT47 93% → 98%, Atbash 94% → 97%), but end to end it is worse
-(259/296, wrong answers 36): a search asks
+Measured with the first 6.0 candidate, that gave the best checker numbers (Athena@Low
+held-out recall 98.2%, F1 0.979; Caesar `crack()` correct 91% → 94%, ROT47 93% → 98%,
+Atbash 94% → 97%), but end to end it was worse (259/296, wrong answers 36): a search asks
 about tens of thousands of short candidates, and 6.0 takes common short words (`ALL`,
 `A TO`, T9's word salads) as language, which they are, but in a search they are almost
 always junk. Ciphey's short-text rules (single words of 4+ letters, 5+ at Low; two words
@@ -101,5 +107,6 @@ prior, so keep them: change 2 is the recommended migration, and rules can be ret
 at a time with the harness showing each.
 
 **4. Other languages**: 6.0.0 ships English; the language packs land in 6.x
-(docs/languages.md). Ciphey's `is_other_language` word list can go once they do, measured
-on the harness's `non_english` category.
+(docs/languages.md). With 6.0.0 alone, Ciphey's English checker keeps its rules for other
+languages; whether `is_other_language` can go is a question for the harness's
+`non_english` category once the packs have landed.

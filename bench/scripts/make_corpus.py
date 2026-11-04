@@ -1068,6 +1068,37 @@ def noise(corpus, english_texts):
         add("ascii_as_utf16", mojibake(t, "utf8_as_utf16le"))
 
 
+def repetitions(corpus):
+    """Repeated letters and repeated short units, what decoders make of repeated digits or
+    bytes (`zzzzzzzz`, `NO NO NO NO`, `A A A A`, `abcabcabc`). Round-robin over the splits."""
+    rng = rng_for("repetitions")
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    words = ["no", "of", "is", "it", "to", "a", "i", "on", "the", "and", "ha", "yes", "an", "in", "at"]
+    for i in range(900):
+        # Every split gets every kind (kind and split mustn't both follow i % 3)
+        split = ("train", "dev", "test")[i % 3]
+        kind = (i // 3) % 6
+        if kind == 0:
+            text = rng.choice(upper) * rng.randint(3, 60)
+        elif kind == 1:
+            unit = "".join(rng.choice(upper) for _ in range(rng.randint(2, 3)))
+            text = unit * rng.randint(3, 25)
+        elif kind == 2:
+            unit = rng.choice(upper)
+            text = " ".join([unit] * rng.randint(3, 20))
+        elif kind == 3:
+            text = " ".join([rng.choice(words)] * rng.randint(3, 15))
+        elif kind == 4:
+            a, b = rng.sample(words, 2)
+            text = " ".join([a, b] * rng.randint(2, 10))
+        else:
+            unit = "".join(rng.choice(upper) for _ in range(rng.randint(1, 3)))
+            text = " ".join([unit] * rng.randint(3, 20))
+        if rng.random() < 0.5:
+            text = text.lower()
+        corpus.add(split, "neg", "-", "repetition", "noise:repetition", text)
+
+
 def optimised_vigenere(corpus, stats, english_by_split):
     """Near-English junk: Vigenère key search output that maximises bigram or quadgram
     fitness, on random letters (no plaintext at all) and on English ciphertexts attacked
@@ -1170,6 +1201,7 @@ def build(cache):
 
     all_english = sorted(t for s in english_by_split.values() for t in s)
     noise(corpus, all_english)
+    repetitions(corpus)
     optimised_vigenere(corpus, EnglishStats(cache), english_by_split)
     return corpus
 

@@ -55,12 +55,13 @@ fn packs_load_from_bytes() {
 #[wasm_bindgen_test]
 fn js_api() {
     use gibberish_or_not::wasm;
-    let d = wasm::detect("Hello, my name is Bee and I like to decode things", None);
+    let d = wasm::detect("Hello, my name is Bee and I like to decode things", None).unwrap();
     assert!(d.is_language());
     assert_eq!(d.language().as_deref(), Some("en"));
-    assert!(wasm::is_gibberish(
-        "q8Zr1Xk0pLm3Vb7Nc5Tw9Hd2Fg4Js6Ky1Ue8Ri0Oa3",
-        Some("high".into())
-    ));
+    let junk = "q8Zr1Xk0pLm3Vb7Nc5Tw9Hd2Fg4Js6Ky1Ue8Ri0Oa3";
+    assert!(wasm::is_gibberish(junk, Some("high".into())).unwrap());
+    assert!(wasm::detect("hello", Some("loud".into())).is_err());
+    assert!(wasm::is_gibberish("hello", Some("Loud".into())).is_err());
+    assert!(wasm::score("Hello, my name is Bee and I like to decode things") >= 0.75);
     assert!(wasm::languages().contains(&"en".to_string()));
 }

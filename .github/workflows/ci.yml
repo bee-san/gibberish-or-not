@@ -33,6 +33,11 @@ jobs:
         run: cargo test --workspace
       - name: no_std library without default features
         run: cargo build --lib --no-default-features
+      - name: pack writer self-test (hashes shared with src/pack.rs) and fixture determinism
+        run: |
+          python3 languages/common/packlib.py
+          python3 tests/fixtures/make_hashed_fixture.py
+          git diff --exit-code tests/fixtures
       - name: accuracy gate (corpus v1, dev split, every language)
         run: cargo run --release -p gib-bench -- gate
 
@@ -65,9 +70,9 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
         run: cargo test --target wasm32-unknown-unknown --features wasm --test wasm
-      - name: tests under wasmtime (wasm32-wasip1)
+      - name: tests under wasmtime (wasm32-wasip1, 32-bit usize)
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
-        run: cargo test --target wasm32-wasip1 --test detect
+        run: cargo test --target wasm32-wasip1 --lib --test detect --test crafted_packs --test hashed_pack
       - name: size budgets (every language, and the WASM module after wasm-opt -Oz)
         run: cargo run --release -p gib-bench -- sizes --wasm --no-latency --check

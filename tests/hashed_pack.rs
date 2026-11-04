@@ -45,9 +45,13 @@ fn long_runs_are_segmented_in_windows() {
 
 #[test]
 fn junk_has_no_coverage() {
-    let (coverage, _, _) = features("鬱鬱鬱鬱鬱鬱鬱鬱");
+    // Characters the pack has never seen
+    let (coverage, _, _) = features("鬱鬮鬯鬲鬳鬴鬵鬶");
     assert_eq!(coverage, 0.0);
-    assert!(detector().detect("鬱鬱鬱鬱鬱鬱鬱鬱").score < 0.5);
+    assert!(detector().detect("鬱鬮鬯鬲鬳鬴鬵鬶").score < 0.5);
+    // One character repeated is vetoed before any pack scores it
+    assert!(detector().features("我我我我我我我我").is_empty());
+    assert_eq!(detector().detect("我我我我我我我我").score, 0.0);
 }
 
 #[test]

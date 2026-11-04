@@ -38,14 +38,20 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   core (edge punctuation stripped) has a digit, `://`, a leading `www.`, an `@`-address, a
   `prefix{...}` flag shape or 8+ hex letters is neutral. Other chunks are split into word
   tokens (letters, in-word apostrophes, combining marks; split at script changes, Han and
-  kana together). It counts writing punctuation, decoder symbols (`\^[]{}|~=<>%*+` and the
-  backtick), other symbols, control characters and unbalanced brackets, and classifies
-  each token's case: lower, upper, capitals that start lower-case runs (`GitHub`), an
+  kana together). In Han, kana and Hangul chunks a number is skipped rather than making the
+  whole chunk an identifier: a chunk there is a sentence (`他工作了6年`). It counts writing
+  punctuation, decoder symbols (`\^[]{}|~=<>%*+` and the backtick), other symbols, control
+  characters, unbalanced brackets, letter variety and repeated words, and classifies each
+  token's case: lower, upper, capitals that start lower-case runs (`GitHub`), an
   acronym's plural (`URLs`), long alternating-case runs (`hiTHEREwelcome`), or odd
   (`hHeREoUtHo`). Only the first 4,096 bytes are looked at.
 - **Vetoes**: a control character other than tab and line breaks (decoder bytes, never
-  writing), no letters outside identifiers, or odd case in more than a third of the cased
-  words (or in any of three or fewer): score 0.
+  writing), no letters outside identifiers, odd case in more than a third of the cased
+  words (or in any of three or fewer), one letter repeated (`zzzz`, `A A A A`), or letters
+  that repeat a unit of at most 6 letters three times (`INININ`, `and the and the and
+  the`), or twice when the unit is two words or more (`is the is the`): score 0. These are
+  what decoders make of repeated digits or bytes, and no weight could learn them from data
+  that has few of them.
 - **N-gram pass** (`model::ngram_pass`): over the letters of the words, with everything
   else removed (word boundaries too, so space-less text scores like spaced text), the mean
   conditional log10 P of each letter given the previous `order - 1` (English: dense 4-gram
@@ -72,15 +78,16 @@ text ──► analysis (one pass, language-independent)            src/text.rs
   neutral); spaced or not; mean token length; identifier share; unbalanced brackets;
   space-less text entirely covered by known words; n-gram mean, coverage and word score
   again for space-less text only; unknown-token share; unknown lower-case letters in mixed-
-  case text; near-miss share.
-- **Classifier and calibration** (`pack::Bucket`): per length bucket (characters: 1–3, 4–5,
-  6–7, 8–9, 10–14, 15–19, 20–29, 30–49, 50–99, 100–199, 200+), a logistic-regression logit
+  case text; near-miss share; repeated words; letter variety.
+- **Classifier and calibration** (`pack::Bucket`): per length bucket (characters of the
+  text without its identifiers: 1–3, 4–5, 6–7, 8–9, 10–14, 15–19, 20–29, 30–49, 50–99,
+  100–199, 200+), a logistic-regression logit
   (weights fitted on the train split per group of buckets: 1–9, 10–19, 20–49, 50+) mapped
   piecewise-linearly through five anchors to the score: the anchors at score 0.5, 0.75 and
   0.9 are the logits at which the **dev split's junk false-positive rate** reaches the
-  High, Medium and Low targets of that bucket (`bench/src/fit.rs`). So a score means the
-  same false-positive rate in every length bucket and language, and the sensitivities are
-  fixed score thresholds.
+  High, Medium and Low targets of that bucket (`bench/src/fit.rs`). So a score means a
+  documented false-positive rate in each length bucket (stricter for short text), the same
+  in every language, and the sensitivities are fixed score thresholds.
 
 ## Decisions, and what was rejected
 
@@ -115,7 +122,7 @@ per letter); hashed tables with fingerprints for Han, kana, Hangul and large alp
 **A word table of 28-bit fingerprints in two-choice 8-slot buckets** (cuckoo-filled),
 parsed from bytes without copying, not `phf` (compile-time only, 16+ bytes per entry for
 `&str`), an FST (not `no_std`) or a sorted list (binary search). 115,000 English words
-are 435 KB; a lookup is two cache lines and a false match is ~6·10⁻⁸.
+are 500 KB; a lookup is two cache lines and a false match is ~6·10⁻⁸.
 
 **Frequency classes, not a word set.** A lone four-letter string is a dictionary word one
 time in 150 (#1031), so "is it a word" can't decide short text; how frequent the words are
@@ -162,6 +169,9 @@ every run failed), and the 5.x dictionary of unknown licence.
 
 ## Limits
 
+- **Junk the corpus lacks** (found in the review of the framework PR, for corpus v2):
+  pronounceable pseudo-words from a letter-trigram model, and English with look-alike
+  letters of other scripts, are accepted more often than by Ciphey's English checker.
 - **Short text is ambiguous.** A wrong Caesar shift of a short word is often another word
   (`Lorry` → `Fills`); the shortest buckets are calibrated strictly, so some real one- and
   two-word texts are rejected at Low.

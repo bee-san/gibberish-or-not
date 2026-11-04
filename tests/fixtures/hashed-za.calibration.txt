@@ -1,5 +1,5 @@
 gon-calibration 1
 lang za
-features bias ngram coverage wordscore odd_case decoder_symbols symbols punctuation foreign spaced token_length identifiers unbalanced covered_nospace ngram_nospace coverage_nospace wordscore_nospace unknown_tokens unknown_lower near_miss
+features bias ngram coverage wordscore odd_case decoder_symbols symbols punctuation foreign spaced token_length identifiers unbalanced covered_nospace ngram_nospace coverage_nospace wordscore_nospace unknown_tokens unknown_lower near_miss repeats variety
 # test fixture: logit = 4 * coverage
-bucket 1 inf 0 0 4 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 0 1 2 3 4
+bucket 1 inf 0 0 4 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 0 1 2 3 4

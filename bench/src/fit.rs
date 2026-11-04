@@ -1,7 +1,7 @@
 //! `gib-bench fit --lang <code>`: fits a pack's classifier on the train split and its score
 //! anchors on the dev split, and writes `languages/<code>/calibration.txt`.
 //!
-//! Per length bucket (letters in the pack's scripts): an L2-regularised, class-balanced
+//! Per length bucket (characters, identifiers left out): an L2-regularised, class-balanced
 //! logistic regression on the library's features (Newton's method on standardised
 //! features), trained on the language's positives against all junk of the train split.
 //! The anchors are the logits at which the dev split's junk false-positive rate reaches each

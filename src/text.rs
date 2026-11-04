@@ -78,6 +78,21 @@ pub(crate) struct Analysis<'a> {
     /// Letters in upper and in lower case, in word tokens.
     pub upper_letters: u32,
     pub lower_letters: u32,
+    /// Characters of the chunks that aren't identifiers, plus one space between each two:
+    /// the length the calibration buckets by, so identifiers don't move a text to another
+    /// length bucket.
+    pub content_chars: u32,
+    /// Letters of cased scripts (Latin, Cyrillic, Greek) in word tokens, and how many
+    /// different ones (case-folded; up to `VARIETY_CAP`).
+    pub cased_letters: u32,
+    pub distinct_cased: u32,
+    /// Word tokens equal (case-folded) to one of the two before them: `NO NO NO NO`.
+    pub repeats: u32,
+    /// Whether the letters of the word tokens, case-folded and run together, repeat a unit
+    /// of at most `PERIOD_MAX` letters three times or more (`INININ`, `prepreprepre`, `and
+    /// the and the and the`), or twice when the unit is two words or more (`is the is
+    /// the`).
+    pub periodic: bool,
     /// Letters of word tokens per script (indexed by `script::index`).
     pub script_letters: [u32; script::COUNT],
 }
@@ -194,10 +209,16 @@ pub(crate) fn is_neutral(s: &str) -> bool {
     if b.is_empty() {
         return false;
     }
-    if b.iter().any(u8::is_ascii_digit) {
+    // Scripts without spaces between words (Han, kana) and Hangul: a chunk is a whole
+    // sentence or phrase, so a number in it (`他工作了6年`, `5년`) doesn't make it an
+    // identifier; the number itself is skipped as neutral when the chunk is tokenized
+    let cjk = !s.is_ascii()
+        && s.chars()
+            .any(|c| matches!(script::of(c), script::HAN | script::KANA | script::HANGUL));
+    if !cjk && b.iter().any(u8::is_ascii_digit) {
         return true;
     }
-    if !s.is_ascii() && s.chars().any(|c| c.is_numeric()) {
+    if !cjk && !s.is_ascii() && s.chars().any(|c| c.is_numeric()) {
         return true;
     }
     if s.contains("://") || (b.len() > 4 && b[..4].eq_ignore_ascii_case(b"www.")) {
@@ -325,8 +346,15 @@ pub(crate) fn analyze(text: &str) -> Analysis<'_> {
         unbalanced: false,
         upper_letters: 0,
         lower_letters: 0,
+        content_chars: 0,
+        cased_letters: 0,
+        distinct_cased: 0,
+        repeats: 0,
+        periodic: false,
         script_letters: [0; script::COUNT],
     };
+    let mut variety = Variety::default();
+    let (mut content_chunks, mut content_sum) = (0u32, 0u32);
     let (mut square, mut curly) = (0i32, 0i32);
     let bytes = text.as_bytes();
     let mut pos = 0usize;
@@ -371,11 +399,113 @@ pub(crate) fn analyze(text: &str) -> Analysis<'_> {
             pos = end;
             continue;
         }
-        tokenize_chunk(text, start, end, chunk_index, &mut a);
+        content_chunks += 1;
+        content_sum += chunk.chars().count() as u32;
+        tokenize_chunk(text, start, end, chunk_index, &mut a, &mut variety);
         pos = end;
     }
     a.unbalanced = square != 0 || curly != 0;
+    a.content_chars = content_sum + content_chunks.saturating_sub(1);
+    a.distinct_cased = variety.distinct;
+    a.repeats = count_repeats(&a);
+    a.periodic = is_periodic(&a);
     a
+}
+
+/// See [`Analysis::periodic`].
+pub(crate) const PERIOD_MAX: usize = 6;
+/// Only the first this many letters are looked at for periodicity.
+const PERIOD_LETTERS: usize = 256;
+
+fn is_periodic(a: &Analysis<'_>) -> bool {
+    let mut buf = ['\0'; PERIOD_LETTERS];
+    let mut tok = [0u16; PERIOD_LETTERS];
+    let mut n = 0usize;
+    'toks: for (ti, t) in a.toks.iter().enumerate() {
+        for c in a.text[t.start as usize..t.end as usize].chars() {
+            if !c.is_alphabetic() {
+                continue;
+            }
+            if n == PERIOD_LETTERS {
+                break 'toks;
+            }
+            buf[n] = if c.is_ascii() {
+                c.to_ascii_lowercase()
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            };
+            tok[n] = ti.min(u16::MAX as usize) as u16;
+            n += 1;
+        }
+    }
+    let letters = &buf[..n];
+    (1..=PERIOD_MAX).any(|p| {
+        // Three periods, or two of a unit of two or more words (`is the is the`, not
+        // `very very`)
+        let enough = n >= 3 * p || (n >= 2 * p && tok[p - 1] != tok[0]);
+        enough && (p..n).all(|i| letters[i] == letters[i - p])
+    })
+}
+
+/// Different letters of cased scripts seen are counted up to this many.
+pub(crate) const VARIETY_CAP: u32 = 32;
+
+/// The different case-folded letters of cased scripts: a bit set for a–z, a short list for
+/// the others.
+#[derive(Default)]
+struct Variety {
+    ascii: u32,
+    other: [u32; 16],
+    n_other: usize,
+    distinct: u32,
+}
+
+impl Variety {
+    #[inline]
+    fn add(&mut self, c: char) {
+        if self.distinct >= VARIETY_CAP {
+            return;
+        }
+        if c.is_ascii() {
+            let bit = 1u32 << (c.to_ascii_lowercase() as u32 - 'a' as u32);
+            if self.ascii & bit == 0 {
+                self.ascii |= bit;
+                self.distinct += 1;
+            }
+            return;
+        }
+        let u = c.to_lowercase().next().unwrap_or(c) as u32;
+        if !self.other[..self.n_other].contains(&u) {
+            if self.n_other < self.other.len() {
+                self.other[self.n_other] = u;
+                self.n_other += 1;
+            }
+            self.distinct += 1;
+        }
+    }
+}
+
+/// Word tokens equal, case-folded, to one of the two tokens before them.
+fn count_repeats(a: &Analysis<'_>) -> u32 {
+    let word = |i: usize| &a.text[a.toks[i].start as usize..a.toks[i].end as usize];
+    let same = |x: &str, y: &str| {
+        x.len() == y.len()
+            && if x.is_ascii() && y.is_ascii() {
+                x.eq_ignore_ascii_case(y)
+            } else {
+                x.chars()
+                    .flat_map(char::to_lowercase)
+                    .eq(y.chars().flat_map(char::to_lowercase))
+            }
+    };
+    let mut n = 0u32;
+    for i in 1..a.toks.len() {
+        let w = word(i);
+        if same(w, word(i - 1)) || (i >= 2 && same(w, word(i - 2))) {
+            n += 1;
+        }
+    }
+    n
 }
 
 #[inline]
@@ -389,7 +519,14 @@ fn next_char(text: &str, pos: usize) -> char {
 }
 
 /// Splits one non-identifier chunk into word tokens and counts its other characters.
-fn tokenize_chunk(text: &str, start: usize, end: usize, chunk: u16, a: &mut Analysis<'_>) {
+fn tokenize_chunk(
+    text: &str,
+    start: usize,
+    end: usize,
+    chunk: u16,
+    a: &mut Analysis<'_>,
+    variety: &mut Variety,
+) {
     let s = &text[start..end];
     let mut cur: Option<(usize, u16, u8, CaseState, bool)> = None; // start, letters, script, case, apostrophe
     let mut last_letter_end = start;
@@ -420,6 +557,10 @@ fn tokenize_chunk(text: &str, start: usize, end: usize, chunk: u16, a: &mut Anal
             entry.1 = entry.1.saturating_add(1);
             entry.3.letter(c);
             a.script_letters[script::index(sc)] += 1;
+            if sc & (script::LATIN | script::CYRILLIC | script::GREEK) != 0 {
+                a.cased_letters += 1;
+                variety.add(c);
+            }
             last_letter_end = at + c.len_utf8();
             last_char = c;
             continue;
@@ -445,6 +586,11 @@ fn tokenize_chunk(text: &str, start: usize, end: usize, chunk: u16, a: &mut Anal
             a,
             &mut words_here,
         );
+        // Numbers inside a chunk that isn't an identifier: only in scripts without spaces
+        // (`他工作了6年`, see `is_neutral`); neutral, like identifiers
+        if c.is_numeric() {
+            continue;
+        }
         if is_writing_punct(c) {
             a.punct += 1;
         } else if is_decoder_symbol(c) {
@@ -565,6 +711,74 @@ mod tests {
         assert_eq!(words("東京タワーに行く"), ["東京タワーに行く"]);
         assert_eq!(words("Tokyo東京"), ["Tokyo", "東京"]);
         assert_eq!(words("café naïve"), ["café", "naïve"]);
+    }
+
+    #[test]
+    fn numbers_in_cjk_sentences() {
+        assert_eq!(
+            words("他在一家律师事务所工作了6年。"),
+            ["他在一家律师事务所工作了", "年"]
+        );
+        assert_eq!(words("這本舊書值5萬日元。"), ["這本舊書值", "萬日元"]);
+        assert_eq!(words("5년 동안"), ["년", "동안"]);
+        let a = analyze("他工作了6年");
+        assert_eq!(a.symbols, 0);
+        assert_eq!(a.neutral_chunks, 0);
+        // Latin chunks with digits are still identifiers
+        assert_eq!(words("abc123 hello"), ["hello"]);
+    }
+
+    #[test]
+    fn content_length_leaves_identifiers_out() {
+        assert_eq!(analyze("lunch").content_chars, 5);
+        assert_eq!(analyze("x9 7k 2b 4q lunch 9z 3m").content_chars, 5);
+        assert_eq!(
+            analyze("The password is IFukwKGsFW8MOq3IRFqrxE1hxTNEbUPR").content_chars,
+            15
+        );
+        assert_eq!(analyze("  hello   world \n").content_chars, 11);
+    }
+
+    #[test]
+    fn variety_and_repeats() {
+        let a = analyze("zzzzzzzzzzzz");
+        assert_eq!((a.cased_letters, a.distinct_cased), (12, 1));
+        let a = analyze("NO NO NO NO NO NO");
+        assert_eq!((a.distinct_cased, a.repeats), (2, 5));
+        let a = analyze("no yes no yes no");
+        assert_eq!(a.repeats, 3);
+        let a = analyze("The quick brown fox jumps over the lazy dog");
+        assert_eq!((a.distinct_cased, a.repeats), (26, 0));
+        let a = analyze("Ééé ÉÉÉ");
+        assert_eq!((a.distinct_cased, a.repeats), (1, 1));
+        let a = analyze("哈哈哈哈");
+        assert_eq!(a.cased_letters, 0);
+    }
+
+    #[test]
+    fn periodic_letters() {
+        for junk in [
+            "INININ",
+            "prepreprepre",
+            "and the and the and the",
+            "to the to the to the",
+            "hahaha",
+            "zzz",
+            "is the is the",
+        ] {
+            assert!(analyze(junk).periodic, "{junk}");
+        }
+        for text in [
+            "very very",
+            "bye bye",
+            "mama",
+            "The quick brown fox",
+            "very very very good",
+            "MEETMEATNOON",
+            "banana",
+        ] {
+            assert!(!analyze(text).periodic, "{text}");
+        }
     }
 
     #[test]

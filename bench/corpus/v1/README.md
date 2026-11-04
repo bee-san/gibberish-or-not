@@ -7,9 +7,9 @@ sha256 of every input and output).
 
 | split | positives | negatives | info | used for |
 |---|---:|---:|---:|---|
-| train | 14,426 | 70,464 | 1,472 | fitting: each pack's classifier weights (`gib-bench fit`) |
-| dev | 17,292 | 70,442 | 1,449 | thresholds and calibration (`gib-bench fit`), every tuning run, the CI gate |
-| test | 21,871 | 90,345 | 1,979 | reporting only: run once per released model version |
+| train | 14,368 | 70,542 | 1,479 | fitting: each pack's classifier weights (`gib-bench fit`) |
+| dev | 17,292 | 70,731 | 1,449 | thresholds and calibration (`gib-bench fit`), every tuning run, the CI gate |
+| test | 21,871 | 90,616 | 1,979 | reporting only: run once per released model version |
 
 ## Format
 
@@ -34,9 +34,10 @@ One source is in exactly one split, and everything derived from a sample (its up
 and space-less forms, its ciphered junk) is in that sample's split:
 
 - **Project Gutenberg**: by book. English: the 85 books Ciphey's quadgram table is counted
-  from are train (as are 299 more training books the English pack uses), 4300, 10007 and
+  from are train (as are 296 more training books the English pack uses), 4300, 10007 and
   69087 are dev, and 1342, 161, 158 (Jane Austen), 98, 64317, 1250, 26184 and 67098 are
-  test. Other languages: the books `fetch_sources.py` picked, 60/20/20 in id order.
+  test. Other languages: the books `fetch_sources.py` picked, 60/20/20 in id order. The few
+  copyrighted Gutenberg ebooks are left out everywhere.
 - **Tatoeba**: by contributor (60/20/20 by a hash of the user name), so no author is in two
   splits.
 - **Wikipedia** (CC BY-SA): test only.
@@ -91,6 +92,7 @@ Language-independent junk:
 | `hex_random`, `base64_random`, `base32_random`, `binary_random`, `hash`, `uuid` | encodings of random bytes, hashes of random words |
 | `rand_bytes`, `rand_bytes_lossy`, `utf16_random`, `utf16le_as_latin1`, `ascii_as_utf16` | bytes read as Latin-1, UTF-8 (lossy) or UTF-16 |
 | `rand_cjk`, `rand_hangul`, `rand_kana`, `rand_cyrillic`, `rand_latin_ext`, `base65536` | random letters of other scripts, and code points from Base65536's blocks |
+| `repetition` | one letter repeated, a unit of 2–3 letters repeated, repeated letters or short words with spaces (`zzzz`, `ININ`, `A A A A`, `NO NO NO`, `and the and the`) |
 
 ## Info (`info`: reported, never counted)
 

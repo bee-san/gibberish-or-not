@@ -6,10 +6,12 @@
 Training sources (train split only, see bench/sources/sources.json and README.md here):
 
 * the 85 public-domain Project Gutenberg books Ciphey counts its quadgram table from
-  (`gutenberg_books.en_train`) and 299 more English books picked from the catalog with a
-  fixed seed (`gutenberg_books.en_train_extra`), none of them a dev or test book;
+  (`gutenberg_books.en_train`) and 296 more English books picked from the catalog with a
+  fixed seed (`gutenberg_books.en_train_extra`), none of them a dev or test book and none
+  of the few Gutenberg ebooks that are copyrighted;
 * the Tatoeba English sentences of the contributors in the train split (CC BY 2.0 FR),
-  a fixed-seed sample of TATOEBA_SENTENCES.
+  without any sentence whose letters are those of a dev or test text of the benchmark
+  corpus, a fixed-seed sample of TATOEBA_SENTENCES.
 
 Model:
 
@@ -18,8 +20,9 @@ Model:
   each text with everything else removed (word boundaries too, so space-less text scores
   like spaced text);
 * the most frequent words seen at least 3 times (in 2 sources, or 10 times in one), lower
-  case, apostrophes kept (`don't`), single letters only `a` and `i`, Roman numerals only
-  when mostly written in lower case, in frequency classes of half a log10 step; then words
+  case, apostrophes kept (`don't`), single letters only `a` and `i`, no runs of one letter
+  (`www`, `zzzz`), Roman numerals only when mostly written in lower case, in frequency
+  classes of half a log10 step; then words
   of Grady Ward's public-domain Moby crossword list (Gutenberg ebook 3201) the books don't
   have, in the rarest class, up to MAX_WORDS in all.
 """
@@ -63,6 +66,11 @@ def main():
         texts.append((f"gutenberg:{n}", packlib.gutenberg_body(os.path.join(args.cache, rel))))
         inputs.append((rel, sources["files"][rel]["sha256"]))
     tat = packlib.tatoeba_train_texts(args.cache, "eng")
+    # No dev or test text in the training data, even when a train contributor wrote it too
+    heldout = packlib.heldout_keys(ROOT, "en")
+    before = len(tat)
+    tat = [t for t in tat if packlib.letters_key(t) not in heldout]
+    dropped_heldout = before - len(tat)
     rng = random.Random("gon-en-tatoeba")
     tat = rng.sample(tat, min(TATOEBA_SENTENCES, len(tat)))
     for i, t in enumerate(tat):
@@ -115,6 +123,8 @@ def main():
             continue
         if len(w) == 1 and w not in ("a", "i"):
             continue
+        if packlib.is_letter_run(w):
+            continue
         if ROMAN.match(w) and len(w) >= 2 and lower[w] < 0.3 * n:
             continue
         keep[w] = n
@@ -126,7 +136,7 @@ def main():
     for w in spelling:
         if len(classes) >= MAX_WORDS:
             break
-        if w not in classes and len(w) > 1:
+        if w not in classes and len(w) > 1 and not packlib.is_letter_run(w):
             classes[w] = RARE_CLASS
 
     out = os.path.join(HERE, "model.bin")
@@ -135,6 +145,7 @@ def main():
     info = {
         "inputs": inputs,
         "tatoeba_sentences": len(tat),
+        "tatoeba_dropped_as_dev_or_test_text": dropped_heldout,
         "letters": letters,
         "tokens": tokens,
         "distinct_words": len(words),

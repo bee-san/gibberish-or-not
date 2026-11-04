@@ -326,7 +326,7 @@ fn cmd_report(args: &Args) -> Result<(), String> {
     let _ = writeln!(
         out,
         "Detector: gibberish-or-not {} with {} (counted positives: these languages; negatives: all junk). Host load average: {}.\n",
-        env!("CARGO_PKG_VERSION"),
+        gibberish_or_not::VERSION,
         enabled.iter().map(|l| l.code()).collect::<Vec<_>>().join(", "),
         uptime()
     );
@@ -534,6 +534,7 @@ fn cmd_report(args: &Args) -> Result<(), String> {
     for l in &enabled {
         let _ = write!(out, " → {} |", l.code());
     }
+    let mut own_junk: Vec<(String, (usize, String))> = Vec::new();
     let _ = write!(out, " → none |\n|---|---:|---|");
     for _ in &enabled {
         let _ = write!(out, "---:|");
@@ -566,6 +567,25 @@ fn cmd_report(args: &Args) -> Result<(), String> {
         }
         let none = idx.iter().filter(|&&j| detail[j].1.is_none()).count();
         let _ = writeln!(out, " {} |", pct(ratio(none, idx.len())));
+        own_junk.push((l.clone(), {
+            let own: Vec<usize> = samples
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.label == Label::Neg && &s.lang == l)
+                .map(|(i, _)| i)
+                .collect();
+            let r: Vec<String> = (0..3)
+                .map(|i| {
+                    pct(ratio(
+                        own.iter()
+                            .filter(|&&j| systems[0].verdicts[j].is_some_and(|v| v[i]))
+                            .count(),
+                        own.len(),
+                    ))
+                })
+                .collect();
+            (own.len(), r.join(" / "))
+        }));
         for (i, (sn, _)) in SENS.iter().enumerate() {
             let _ = writeln!(
                 tsv,
@@ -578,6 +598,11 @@ fn cmd_report(args: &Args) -> Result<(), String> {
                 )
             );
         }
+    }
+
+    let _ = writeln!(out, "\nFalse-positive rate of each language's own junk (the negatives derived from its text; Low / Medium / High; docs/languages.md gate 3):\n\n| lang | negatives | gon6 FPR |\n|---|---:|---|");
+    for (l, (n, r)) in &own_junk {
+        let _ = writeln!(out, "| {l} | {n} | {r} |");
     }
 
     // Examples
