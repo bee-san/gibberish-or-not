@@ -47,7 +47,7 @@ their signatures and meaning.
   alone is gibberish to gibberish-or-not (ask pyWhat what it is).
 - Wrong cipher keys, near-English Vigenère key-search output, reversed text, encodings,
   hashes, random strings and mojibake are rejected far more often (on the benchmark's test
-  split, 5.0.7 accepted 19.1% of the junk at High, 6.0 accepts 0.88%).
+  split, 5.0.7 accepted 19.1% of the junk at High, 6.0 accepts 0.87%).
 - Text in a language whose pack isn't compiled in is gibberish (5.x accepted some French,
   German and Spanish by accident).
 - Text longer than 4,096 bytes is judged by its first 4,096.

@@ -52,14 +52,14 @@ adds to it today:
 
 | | Low: recall / false positives | Medium | High |
 |---|---|---|---|
-| **gibberish-or-not 6.0** | **97.8% / 0.18%** | **98.4% / 0.36%** | **98.5% / 0.88%** |
+| **gibberish-or-not 6.0** | **97.2% / 0.14%** | **98.7% / 0.36%** | **98.9% / 0.87%** |
 | 5.0.7 | 70.9% / 0.63% | 84.1% / 3.06% | 92.1% / 19.1% |
 | 5.0.7 + Ciphey's English checker | 95.3% / 0.27% | 97.0% / 0.51% | 97.3% / 1.23% |
 
 Per length, kind of text and kind of junk, the speed, the sizes and how to reproduce every
 number: [docs/benchmark.md](docs/benchmark.md). In short:
 
-- **Speed**: median 0.7 µs and 99th percentile 13 µs per check (inputs up to 256
+- **Speed**: median 0.7 µs and 99th percentile 14 µs per check (inputs up to 256
   characters, on a shared busy host); WASM within 1.7× of native.
 - **Size**: the English pack is 956 KB; the whole WASM module after `wasm-opt -Oz` is
   1.2 MB.

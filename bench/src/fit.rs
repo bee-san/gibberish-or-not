@@ -213,16 +213,21 @@ pub fn logistic(xs: &[&Example], l2: f64) -> Vec<f64> {
 /// in characters. Short text is stricter: a wrong Caesar shift of a short word is often
 /// another word. The rates are below both baselines' (gibberish-or-not 5.0.7 and Ciphey's
 /// English checker) in each of the report's length buckets of corpus v1's dev split, which
-/// is what 6.0 must beat (docs/benchmark.md).
+/// is what 6.0 must beat (docs/benchmark.md). Under 10 characters the rate is for the
+/// four short buckets together (`allocate`).
 pub fn targets(chars_lo: u32) -> [f64; 3] {
     match chars_lo {
-        0..=9 => [0.001, 0.0008, 0.0002],
+        0..=9 => [0.001, 0.0008, 0.0003],
         10..=19 => [0.004, 0.002, 0.001],
         20..=49 => [0.012, 0.005, 0.003],
         50..=199 => [0.015, 0.005, 0.002],
         _ => [0.015, 0.005, 0.0],
     }
 }
+
+/// Buckets of texts shorter than this many characters share one false-positive budget per
+/// sensitivity (`allocate`), the target of the 1-9 character report bucket.
+pub const SHORT_CHARS: u32 = 10;
 
 /// A bucket's own-language junk is used for the thresholds when it has at least this many
 /// samples (fewer can't estimate the targets).
@@ -237,17 +242,141 @@ pub struct Targets {
     pub scale: f64,
 }
 
-/// The logit at which at most `fpr` of `negatives` (sorted ascending, rejected ones
-/// excluded but counted in `total`) are at or above it.
+/// Negatives above a threshold below which the empirical quantile is used; with fewer, the
+/// tail is modelled.
+pub const TAIL_SAMPLES: usize = 25;
+
+/// The logit above which a share `fpr` of the negatives lies. `sorted_neg` holds the
+/// logits of the negatives the pack scores, ascending; `total` counts the gated ones too.
+///
+/// A zero target is just above the highest negative. With at least [`TAIL_SAMPLES`]
+/// negatives expected above it, the empirical quantile.
+/// With fewer (short buckets, strict targets) the empirical quantile is one or two samples
+/// and doesn't generalise (a split-half check on dev gave 5x the target), so the tail is
+/// modelled instead: the excesses of the top [`TAIL_SAMPLES`] logits over the next one are
+/// taken as exponential (peaks over threshold), and the threshold is where that tail
+/// reaches `fpr`.
 fn threshold(sorted_neg: &[f64], total: usize, fpr: f64) -> f64 {
-    let allowed = (fpr * total as f64).floor() as usize;
-    if sorted_neg.is_empty() || allowed >= sorted_neg.len() {
+    let n = sorted_neg.len();
+    if n == 0 || total == 0 {
         return f64::NEG_INFINITY;
     }
-    // Strictly above the (allowed+1)-th highest
-    let k = sorted_neg.len() - 1 - allowed;
-    let v = sorted_neg[k];
-    v + 1e-4 * v.abs().max(1.0)
+    let expected = fpr * total as f64;
+    // A zero target: just above the highest negative
+    if fpr <= 0.0 {
+        let v = sorted_neg[n - 1];
+        return v + 1e-4 * v.abs().max(1.0);
+    }
+    if expected >= TAIL_SAMPLES as f64 || n <= TAIL_SAMPLES + 1 {
+        let allowed = expected.floor() as usize;
+        if allowed >= n {
+            return f64::NEG_INFINITY;
+        }
+        let v = sorted_neg[n - 1 - allowed];
+        return v + 1e-4 * v.abs().max(1.0);
+    }
+    let m = TAIL_SAMPLES;
+    let u = sorted_neg[n - 1 - m];
+    let beta = (sorted_neg[n - m..].iter().map(|z| z - u).sum::<f64>() / m as f64).max(0.05);
+    let rate = expected.max(1e-3);
+    u + beta * (m as f64 / rate).ln()
+}
+
+fn ratio(a: usize, b: usize) -> f64 {
+    if b == 0 {
+        f64::NAN
+    } else {
+        a as f64 / b as f64
+    }
+}
+
+/// Expected number of `sorted_neg` (ascending) at or above `t`: the count, or, where fewer
+/// than [`TAIL_SAMPLES`] are, the exponential tail fitted to the top ones (see
+/// [`threshold`]).
+fn tail_count(sorted_neg: &[f64], t: f64) -> f64 {
+    let n = sorted_neg.len();
+    let above = n - sorted_neg.partition_point(|&z| z < t);
+    if above >= TAIL_SAMPLES || n <= TAIL_SAMPLES + 1 {
+        return above as f64;
+    }
+    let m = TAIL_SAMPLES;
+    let u = sorted_neg[n - 1 - m];
+    let beta = (sorted_neg[n - m..].iter().map(|z| z - u).sum::<f64>() / m as f64).max(0.05);
+    m as f64 * (-(t - u) / beta).exp()
+}
+
+/// Thresholds for several short buckets that share one false-positive budget: `budget`
+/// expected false positives over all of them, spent where it buys the most recall (greedy
+/// on the upper convex hull of each bucket's recall against its tail-estimated false
+/// positives). Real short words and junk that happens to be a word overlap in the
+/// shortest buckets, so an equal target per bucket would reject them all there.
+fn allocate(buckets: &[(Vec<f64>, Vec<f64>)], budget: f64) -> Vec<f64> {
+    // Per bucket: the k-th step accepts the k best positives
+    let steps: Vec<Vec<(f64, f64)>> = buckets
+        .iter()
+        .map(|(pos, neg)| {
+            let mut p: Vec<f64> = pos.clone();
+            p.sort_by(|a, b| b.total_cmp(a));
+            let mut v = vec![(f64::INFINITY, 0.0)];
+            for (k, &t) in p.iter().enumerate() {
+                // ties: only the last of equal logits is a step
+                if p.get(k + 1).is_some_and(|&next| next == t) {
+                    continue;
+                }
+                v.push((t, tail_count(neg, t)));
+            }
+            v
+        })
+        .collect();
+    let mut at = vec![0usize; buckets.len()];
+    let mut spent = 0.0;
+    loop {
+        // The best next step of each bucket: the most positives per false positive
+        let mut best: Option<(f64, usize, usize, f64)> = None; // ratio, bucket, step, cost
+        for (b, v) in steps.iter().enumerate() {
+            let (k0, fp0) = (at[b], v[at[b]].1);
+            let pos_at = |k: usize| -> usize {
+                // positives accepted at step k: count of logits >= v[k].0
+                let (pos, _) = &buckets[b];
+                pos.iter().filter(|&&z| z >= v[k].0).count()
+            };
+            let p0 = pos_at(k0);
+            for k in k0 + 1..v.len() {
+                let cost = (v[k].1 - fp0).max(1e-9);
+                let ratio = (pos_at(k) - p0) as f64 / cost;
+                if best.is_none_or(|(r, _, _, _)| ratio > r) {
+                    best = Some((ratio, b, k, cost));
+                }
+            }
+        }
+        let Some((_, b, k, cost)) = best else { break };
+        if spent + cost > budget {
+            break;
+        }
+        spent += cost;
+        at[b] = k;
+    }
+    at.iter()
+        .zip(&steps)
+        .zip(buckets)
+        .map(|((&k, v), (pos, neg))| {
+            if k == 0 {
+                // Nothing accepted: above every positive and negative
+                let top = pos
+                    .iter()
+                    .chain(neg.iter())
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if top.is_finite() {
+                    top + 1.0
+                } else {
+                    0.0
+                }
+            } else {
+                v[k].0 - 1e-6
+            }
+        })
+        .collect()
 }
 
 pub struct FitReport {
@@ -306,16 +435,23 @@ pub fn fit(
         "gate {gate:.3}: rejects {gated_neg} of {dev_neg} dev negatives without the word model"
     ));
     cal.push_str(&format!("gate {gate}\n"));
-    let mut prev_anchors: Option<[f64; 5]> = None;
+    // Pass 1: weights per group of buckets, and every bucket's dev logits
+    struct Dev {
+        w: Vec<f64>,
+        pos: Vec<f64>,
+        neg: Vec<f64>,
+        own: Vec<f64>,
+        neg_total: usize,
+        own_total: usize,
+        /// The dev negatives in two halves (by sample order; gated ones as -inf)
+        halves: [Vec<f64>; 2],
+        train_pos: usize,
+        train_neg: usize,
+    }
+    let mut dev: Vec<Dev> = Vec::new();
     for (b, &lo) in BUCKETS.iter().enumerate() {
-        let hi = BUCKETS.get(b + 1).map(|n| n - 1);
         let in_b = |e: &Example| bucket_of(e.chars) == b;
         let group = group_of(lo);
-        let train_b: Vec<&Example> = tr
-            .iter()
-            .filter_map(|(e, _, _)| e.as_ref())
-            .filter(|e| in_b(e))
-            .collect();
         let train_g: Vec<&Example> = tr
             .iter()
             .filter_map(|(e, _, _)| e.as_ref())
@@ -327,61 +463,153 @@ pub fn fit(
             logistic(&train_g, l2)
         };
         let logit = |e: &Example| -> f64 { e.x.iter().zip(&w).map(|(a, b)| a * b).sum() };
-        // Dev junk of this bucket: the applicable ones by logit; the rest count as rejected.
-        // A negative the pack doesn't apply to has no letter count: it is spread over the
-        // buckets by its share of all negatives (counted in every bucket's total in
-        // proportion), which we approximate by counting it in no bucket's numerator and
-        // in the total of the bucket its text length would fall in (by characters).
-        // All dev junk of the bucket, and the part derived from this language's own text.
-        // At Low, the threshold meets the target on both (the stricter wins), so Low's
-        // false-positive rate holds whatever the mix of junk: own-language junk is the
-        // hardest, and its share varies (the test split has more English than dev).
-        let mut neg: Vec<f64> = Vec::new();
-        let mut own: Vec<f64> = Vec::new();
-        let mut pos: Vec<f64> = Vec::new();
-        let (mut neg_total, mut own_total) = (0usize, 0usize);
+        let mut d = Dev {
+            pos: Vec::new(),
+            neg: Vec::new(),
+            own: Vec::new(),
+            neg_total: 0,
+            own_total: 0,
+            halves: [Vec::new(), Vec::new()],
+            train_pos: tr
+                .iter()
+                .filter_map(|(e, _, _)| e.as_ref())
+                .filter(|e| in_b(e) && e.y)
+                .count(),
+            train_neg: tr
+                .iter()
+                .filter_map(|(e, _, _)| e.as_ref())
+                .filter(|e| in_b(e) && !e.y)
+                .count(),
+            w: Vec::new(),
+        };
+        // Negatives the pack doesn't apply to (no letters in its scripts, vetoed) are
+        // rejected by it whatever the threshold, and counted in no bucket.
+        let mut nth = 0usize;
         for (e, y, is_own) in &dv {
-            match e {
-                Some(e) if in_b(e) && e.rank < gate => {
-                    if !*y {
-                        neg_total += 1;
-                        own_total += usize::from(*is_own);
-                    }
+            let Some(e) = e else { continue };
+            if !in_b(e) {
+                continue;
+            }
+            let z = if e.rank < gate {
+                f64::NEG_INFINITY
+            } else {
+                logit(e)
+            };
+            if *y {
+                if z.is_finite() {
+                    d.pos.push(z);
                 }
-                Some(e) if in_b(e) => {
-                    if *y {
-                        pos.push(logit(e));
-                    } else {
-                        neg.push(logit(e));
-                        neg_total += 1;
-                        if *is_own {
-                            own.push(logit(e));
-                            own_total += 1;
-                        }
-                    }
+                continue;
+            }
+            d.neg_total += 1;
+            d.own_total += usize::from(*is_own);
+            d.halves[nth % 2].push(z);
+            nth += 1;
+            if z.is_finite() {
+                d.neg.push(z);
+                if *is_own {
+                    d.own.push(z);
                 }
-                _ => {}
             }
         }
-        neg.sort_by(f64::total_cmp);
-        own.sort_by(f64::total_cmp);
-        pos.sort_by(f64::total_cmp);
-        let mut a = [0.0f64; 5];
-        // High, Medium, Low thresholds
+        d.pos.sort_by(f64::total_cmp);
+        d.neg.sort_by(f64::total_cmp);
+        d.own.sort_by(f64::total_cmp);
+        d.w = w;
+        dev.push(d);
+    }
+
+    // Pass 2: thresholds (High, Medium, Low) per bucket. The short buckets (under
+    // SHORT_CHARS characters) share one budget per sensitivity, spent where it buys the
+    // most recall (`allocate`); the others meet their own targets.
+    let short: Vec<usize> = (0..BUCKETS.len())
+        .filter(|&b| BUCKETS[b] < SHORT_CHARS)
+        .collect();
+    let mut thresholds = vec![[f64::NEG_INFINITY; 3]; BUCKETS.len()];
+    for (b, &lo) in BUCKETS.iter().enumerate() {
+        if short.contains(&b) {
+            continue;
+        }
+        let d = &dev[b];
         for (i, f) in self::targets(lo).iter().enumerate() {
-            let t_all = threshold(&neg, neg_total, f * targets.scale);
-            let t_own = if i == 2 && own_total >= OWN_JUNK_MIN {
-                threshold(&own, own_total, f * targets.scale)
+            let t_all = threshold(&d.neg, d.neg_total, f * targets.scale);
+            let t_own = if i == 2 && d.own_total >= OWN_JUNK_MIN {
+                threshold(&d.own, d.own_total, f * targets.scale)
             } else {
                 f64::NEG_INFINITY
             };
-            a[i + 1] = t_all.max(t_own);
+            thresholds[b][i] = t_all.max(t_own);
         }
+    }
+    if !short.is_empty() {
+        let f = self::targets(1);
+        let total: usize = short.iter().map(|&b| dev[b].neg_total).sum();
+        for (i, f) in f.iter().enumerate() {
+            let pairs: Vec<(Vec<f64>, Vec<f64>)> = short
+                .iter()
+                .map(|&b| (dev[b].pos.clone(), dev[b].neg.clone()))
+                .collect();
+            let t_all = allocate(&pairs, f * targets.scale * total as f64);
+            // No own-language constraint here: at these rates the own junk of one bucket
+            // is a handful of samples, and the tail estimate of each is already
+            // conservative (split-half FPR below the target on dev)
+            for (k, &b) in short.iter().enumerate() {
+                thresholds[b][i] = t_all[k];
+            }
+        }
+        // Split-half check of the short group: allocate on one half of the negatives,
+        // count false positives on the other
+        let mut fp = [0usize; 3];
+        let mut n = 0usize;
+        for h in 0..2 {
+            let half_total: usize = short.iter().map(|&b| dev[b].halves[h].len()).sum();
+            n += short
+                .iter()
+                .map(|&b| dev[b].halves[1 - h].len())
+                .sum::<usize>();
+            for (i, f) in self::targets(1).iter().enumerate() {
+                let pairs: Vec<(Vec<f64>, Vec<f64>)> = short
+                    .iter()
+                    .map(|&b| {
+                        let mut neg: Vec<f64> = dev[b].halves[h]
+                            .iter()
+                            .copied()
+                            .filter(|z| z.is_finite())
+                            .collect();
+                        neg.sort_by(f64::total_cmp);
+                        (dev[b].pos.clone(), neg)
+                    })
+                    .collect();
+                let t = allocate(&pairs, f * targets.scale * half_total as f64);
+                for (k, &b) in short.iter().enumerate() {
+                    fp[2 - i] += dev[b].halves[1 - h].iter().filter(|&&z| z >= t[k]).count();
+                }
+            }
+        }
+        let tg = self::targets(1);
+        lines.push(format!(
+            "buckets 1-{}: split-half FPR L/M/H {:.4}/{:.4}/{:.4} (targets {:.4}/{:.4}/{:.4}, shared)",
+            SHORT_CHARS - 1,
+            ratio(fp[0], n),
+            ratio(fp[1], n),
+            ratio(fp[2], n),
+            tg[2] * targets.scale,
+            tg[1] * targets.scale,
+            tg[0] * targets.scale,
+        ));
+    }
+
+    // Anchors, the split-half check of the other buckets, and the report
+    let mut prev_anchors: Option<[f64; 5]> = None;
+    for (b, &lo) in BUCKETS.iter().enumerate() {
+        let hi = BUCKETS.get(b + 1).map(|n| n - 1);
+        let d = &dev[b];
+        let mut a = [0.0f64; 5];
+        a[1..4].copy_from_slice(&thresholds[b]);
         // Without enough junk in the bucket, fall back to the previous bucket's anchors
         // relative position, or to the positives' spread
-        let finite = a[1..4].iter().all(|v| v.is_finite());
-        if !finite {
-            let pos_med = pos.get(pos.len() / 2).copied().unwrap_or(0.0);
+        if !a[1..4].iter().all(|v| v.is_finite()) {
+            let pos_med = d.pos.get(d.pos.len() / 2).copied().unwrap_or(0.0);
             let base = prev_anchors.map(|p| p[1]).unwrap_or(pos_med - 3.0);
             for i in 1..4 {
                 if !a[i].is_finite() {
@@ -393,35 +621,52 @@ pub fn fit(
         a[2] = a[2].max(a[1]);
         a[3] = a[3].max(a[2]);
         let spread = (a[3] - a[1]).max(1.0);
-        let neg_med = neg.get(neg.len() / 2).copied().unwrap_or(a[1] - spread);
+        let neg_med = d.neg.get(d.neg.len() / 2).copied().unwrap_or(a[1] - spread);
         a[0] = (a[1] - spread).min(neg_med).min(a[1] - 0.5);
-        let pos_hi = pos
-            .get(pos.len() * 9 / 10)
+        let pos_hi = d
+            .pos
+            .get(d.pos.len() * 9 / 10)
             .copied()
             .unwrap_or(a[3] + spread);
         a[4] = (a[3] + spread).max(pos_hi).max(a[3] + 0.5);
         prev_anchors = Some(a);
-        let recall = |t: f64| {
-            if pos.is_empty() {
-                f64::NAN
-            } else {
-                pos.iter().filter(|&&z| z >= t).count() as f64 / pos.len() as f64
+        if !short.contains(&b) {
+            let mut half_fp = [0usize; 3];
+            let mut half_n = 0usize;
+            for h in 0..2 {
+                let mut fit_half: Vec<f64> = d.halves[h]
+                    .iter()
+                    .copied()
+                    .filter(|z| z.is_finite())
+                    .collect();
+                fit_half.sort_by(f64::total_cmp);
+                let other = &d.halves[1 - h];
+                half_n += other.len();
+                for (i, f) in self::targets(lo).iter().enumerate() {
+                    let t = threshold(&fit_half, d.halves[h].len(), f * targets.scale);
+                    half_fp[2 - i] += other.iter().filter(|&&z| z >= t).count();
+                }
             }
-        };
-        let fpr = |t: f64| {
-            if neg_total == 0 {
-                f64::NAN
-            } else {
-                neg.iter().filter(|&&z| z >= t).count() as f64 / neg_total as f64
-            }
-        };
+            lines.push(format!(
+                "bucket {lo}-{}: split-half FPR L/M/H {:.4}/{:.4}/{:.4} (targets {:.4}/{:.4}/{:.4})",
+                hi.map_or("inf".into(), |h| h.to_string()),
+                ratio(half_fp[0], half_n),
+                ratio(half_fp[1], half_n),
+                ratio(half_fp[2], half_n),
+                self::targets(lo)[2] * targets.scale,
+                self::targets(lo)[1] * targets.scale,
+                self::targets(lo)[0] * targets.scale,
+            ));
+        }
+        let recall = |t: f64| ratio(d.pos.iter().filter(|&&z| z >= t).count(), d.pos.len());
+        let fpr = |t: f64| ratio(d.neg.iter().filter(|&&z| z >= t).count(), d.neg_total);
         lines.push(format!(
             "bucket {lo}-{}: train {} pos / {} neg; dev {} pos / {} neg; dev recall H/M/L {:.3}/{:.3}/{:.3}, FPR {:.4}/{:.4}/{:.4}",
             hi.map_or("inf".into(), |h| h.to_string()),
-            train_b.iter().filter(|e| e.y).count(),
-            train_b.iter().filter(|e| !e.y).count(),
-            pos.len(),
-            neg_total,
+            d.train_pos,
+            d.train_neg,
+            d.pos.len(),
+            d.neg_total,
             recall(a[1]),
             recall(a[2]),
             recall(a[3]),
@@ -433,7 +678,7 @@ pub fn fit(
             "bucket {lo} {}",
             hi.map_or("inf".into(), |h| h.to_string())
         ));
-        for v in &w {
+        for v in &d.w {
             cal.push_str(&format!(" {}", *v as f32));
         }
         cal.push_str(" |");

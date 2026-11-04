@@ -1,18 +1,18 @@
 # gib-bench gate --write --lang en: dev-split recall with every language compiled in
-en	Low	all	recall	0.967751
-en	Low	1-9	recall	0.843558
-en	Low	10-19	recall	0.993046
+en	Low	all	recall	0.963609
+en	Low	1-9	recall	0.828221
+en	Low	10-19	recall	0.987483
 en	Low	20-49	recall	0.998471
 en	Low	50-199	recall	1.000000
 en	Low	200+	recall	1.000000
-en	Medium	all	recall	0.970710
-en	Medium	1-9	recall	0.858896
+en	Medium	all	recall	0.988462
+en	Medium	1-9	recall	0.950920
 en	Medium	10-19	recall	0.993046
 en	Medium	20-49	recall	0.998471
 en	Medium	50-199	recall	1.000000
 en	Medium	200+	recall	1.000000
-en	High	all	recall	0.974852
-en	High	1-9	recall	0.880368
+en	High	all	recall	0.990533
+en	High	1-9	recall	0.961656
 en	High	10-19	recall	0.993046
 en	High	20-49	recall	0.998471
 en	High	50-199	recall	1.000000

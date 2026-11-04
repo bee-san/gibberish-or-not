@@ -47,8 +47,7 @@ cargo run --release -p gib-bench -- --corpus v1 --split dev
 - `max_word_chars` 16 (each character more is one more word lookup per letter when a token
   is segmented), `seg_min_letters` 6, `lambda` -2.0.
 - Calibration targets (bench/src/fit.rs) are below both baselines' dev false-positive
-  rates in every length bucket; at Low the thresholds also meet the target on the junk
-  derived from English text alone (the hardest, and its share differs between splits).
+  rates in every length bucket (docs/benchmark.md, "Calibration targets").
 
 ## Numbers
 
@@ -56,5 +55,5 @@ Corpus v1, English positives against all junk; full tables in docs/benchmark.md.
 
 | split | Low recall / FPR | Medium | High |
 |---|---|---|---|
-| dev | 96.7% / 0.094% | 97.2% / 0.23% | 97.5% / 0.60% |
-| test | 97.8% / 0.18% | 98.4% / 0.36% | 98.5% / 0.88% |
+| dev | 96.4% / 0.081% | 98.8% / 0.25% | 99.1% / 0.61% |
+| test | 97.2% / 0.14% | 98.7% / 0.36% | 98.9% / 0.87% |
