@@ -1,0 +1,12 @@
+[package]
+name = "gon-wasm-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "The gibberish-or-not WASM module the size budget and node latency are measured on (not published)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gibberish-or-not = { path = "../..", features = ["wasm"] }
