@@ -296,7 +296,13 @@ Things to know before you start:
 - Turkish and Korean have no Gutenberg books in the cache; Tatoeba is there for every
   language, and any public-domain or CC BY source you add is welcome.
 - Numbers inside Chinese, Japanese and Korean chunks are neutral (`他工作了6年`); the
-  rest of the chunk is scored.
+  rest of the chunk is scored. So are identifiers glued to them: letters with digits
+  (`密码hunter2`), flags (`答案是flag{...}`), hex (`哈希值deadbeef...`), URLs and emails.
+- A Han, kana or Hangul character counts 3 times against other letters when the text's
+  scripts are chosen, so CJK text with Latin names and terms in it
+  (`ACMおよびAAAIのフェロー、Google研究本部長(Director of Research)を務めている。`) still gets
+  your pack as a candidate. Han and kana tokens get the rules of unspaced text also where the
+  text has spaces (`田口 翔太郎`).
 - Repetitions (`哈哈哈哈`, `NO NO NO NO`) are vetoed before any pack sees them.
 
 ## Tests

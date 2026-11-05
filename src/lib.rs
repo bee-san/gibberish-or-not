@@ -508,6 +508,20 @@ mod tests {
     }
 
     #[test]
+    fn a_dominant_latin_letter_in_cjk_is_not_a_veto() {
+        // audit F24: laughter (`www`) or a grade (`AAAA`) in CJK text
+        for text in [
+            "今日は楽しかったですwwwwwwww",
+            "本当に面白い映画でしたwwwwwwwwww",
+            "这个评级是AAAAAAAAA级的",
+        ] {
+            assert!(!model::vetoed(&text::analyze(text)), "{text}");
+        }
+        // ... and still a veto where cased letters are the text
+        assert!(model::vetoed(&text::analyze("AAAAAAAAAAAAAAAAAAAAAQ==")));
+    }
+
+    #[test]
     fn odd_case_latin_in_cjk_is_not_a_veto() {
         // One odd-cased name in a sentence of another script isn't decoder output
         let a = text::analyze("我们公司的所有开发人员都在使用macOS系统工作");

@@ -107,15 +107,30 @@ impl<'a> Analysis<'a> {
                 flags |= 1 << i;
             }
         }
-        // Japanese mixes Han and kana: together they can be the majority.
+        // A Han, kana or Hangul character carries about as much as a short word: against the
+        // other letters each counts CJK_WEIGHT times, so that Chinese, Japanese or Korean with
+        // Latin names and terms in it (`ACMおよびAAAIのフェロー、Google研究本部長(Director of
+        // Research)を務めている。`) still gets candidates of its script. The other scripts keep
+        // the plain majority above. Japanese mixes Han and kana: together they count.
         let han = self.script_letters[script::index(script::HAN)];
         let kana = self.script_letters[script::index(script::KANA)];
-        if kana > 0 && (han + kana) * 2 >= self.letters {
+        let hangul = self.script_letters[script::index(script::HANGUL)];
+        let weighted = |n: u32| n > 0 && CJK_WEIGHT * n >= self.letters - n;
+        if kana > 0 && weighted(han + kana) {
             flags |= script::HAN | script::KANA;
+        }
+        if weighted(han) {
+            flags |= script::HAN;
+        }
+        if weighted(hangul) {
+            flags |= script::HANGUL;
         }
         flags
     }
 }
+
+/// See [`Analysis::main_scripts`].
+const CJK_WEIGHT: u32 = 3;
 
 #[inline]
 fn is_combining_mark(c: char) -> bool {
@@ -537,9 +552,13 @@ fn tokenize_chunk(
 ) {
     let s = &text[start..end];
     // Inside a chunk of Han, kana or Hangul (a whole sentence: `is_neutral`), a run of ASCII
-    // letters and digits that has a digit is an identifier glued to the text (`密码hunter2`,
-    // a UUID next to Hangul): skipped, like a whole identifier chunk. A run of digits alone
-    // (`6年`) is skipped as a number below.
+    // that is an identifier glued to the text is skipped, like a whole identifier chunk:
+    // letters with digits (`密码hunter2`, a UUID next to Hangul), flags
+    // (`答案是flag{this_is_a_flag}`), hex (`哈希值deadbeefcafebabe`), URLs and emails
+    // (`is_neutral`'s shapes). A run of digits alone (`6年`) is skipped as a number below.
+    let cjk_chunk = !s.is_ascii()
+        && s.chars()
+            .any(|c| matches!(script::of(c), script::HAN | script::KANA | script::HANGUL));
     let mut skip_until = 0usize;
     let mut cur: Option<(usize, u16, u8, CaseState, bool)> = None; // start, letters, script, case, apostrophe
     let mut last_letter_end = start;
@@ -550,6 +569,24 @@ fn tokenize_chunk(
         let at = start + i;
         if i < skip_until {
             continue;
+        }
+        if cjk_chunk && c.is_ascii_graphic() && (i == 0 || !s.as_bytes()[i - 1].is_ascii_graphic())
+        {
+            // The whole run of ASCII glued to the CJK text
+            let run = s[i..].bytes().take_while(u8::is_ascii_graphic).count();
+            let seg = s[i..i + run].trim_matches(is_edge);
+            if seg.bytes().any(|b| b.is_ascii_alphabetic()) && is_neutral(seg) {
+                close(
+                    &mut cur,
+                    last_letter_end,
+                    last_char,
+                    chunk,
+                    a,
+                    &mut words_here,
+                );
+                skip_until = i + run;
+                continue;
+            }
         }
         if c.is_ascii_alphanumeric() && (i == 0 || !s.as_bytes()[i - 1].is_ascii_alphanumeric()) {
             let run = s[i..].bytes().take_while(u8::is_ascii_alphanumeric).count();
@@ -867,5 +904,46 @@ mod tests {
         );
         let a = analyze("你好世界");
         assert_eq!(a.main_scripts(), script::HAN);
+    }
+
+    #[test]
+    fn cjk_with_latin_terms_keeps_its_script() {
+        // Latin letters are the majority, but each Han, kana or Hangul character counts 3 times
+        for (text, flag) in [
+            (
+                "また、ジャーナルTheologicalEducationを発行している。",
+                script::KANA,
+            ),
+            (
+                "ACMおよびAAAIのフェロー、Google研究本部長(Director of Research)を務めている。",
+                script::KANA,
+            ),
+            ("我们使用Python和JavaScript开发", script::HAN),
+            ("저는 Python과 JavaScript를 씁니다", script::HANGUL),
+        ] {
+            let a = analyze(text);
+            assert!(
+                a.script_letters[script::index(script::LATIN)] * 2 > a.letters,
+                "{text}"
+            );
+            assert_ne!(a.main_scripts() & flag, 0, "{text}");
+            // ... and Latin stays a main script where it is the majority
+            assert_ne!(a.main_scripts() & script::LATIN, 0, "{text}");
+        }
+        // A few CJK characters in Latin text don't make the CJK script a main one
+        assert_eq!(
+            analyze("the meeting is tomorrow morning 明天").main_scripts(),
+            script::LATIN
+        );
+    }
+
+    #[test]
+    fn identifiers_glued_to_cjk_text_are_skipped() {
+        assert_eq!(words("答案是flag{this_is_a_flag}"), ["答案是"]);
+        assert_eq!(words("答案是flag{th1s_1s_a_fl4g}"), ["答案是"]);
+        assert_eq!(words("哈希值deadbeefcafebabe"), ["哈希值"]);
+        assert_eq!(words("密码hunter2"), ["密码"]);
+        // Latin words glued to CJK text are words
+        assert_eq!(words("使用Python开发"), ["使用", "Python", "开发"]);
     }
 }

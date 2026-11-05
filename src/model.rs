@@ -81,7 +81,9 @@ pub(crate) fn vetoed(a: &Analysis<'_>) -> bool {
         || a.letters == 0
         || (mostly_cased && a.odd_case > 0 && (a.odd_case * 3 > a.cased || a.cased <= 3))
         || (a.cased_letters >= 3 && a.cased_letters == a.letters && a.distinct_cased == 1)
-        || (a.cased_letters >= DOMINANT_MIN_LETTERS && a.top_cased * 4 >= a.cased_letters * 3)
+        || (mostly_cased
+            && a.cased_letters >= DOMINANT_MIN_LETTERS
+            && a.top_cased * 4 >= a.cased_letters * 3)
         || a.periodic
 }
 
@@ -438,10 +440,13 @@ pub(crate) fn features_from(
             continue;
         }
         let word = &text[t.start as usize..t.end as usize];
-        let w = if t.script & (script::HAN | script::KANA) != 0
-            && usize::from(t.letters) > CJK_WINDOW_CHARS
-        {
+        // Han and kana have no spaces between words, also where a text has spaces (a name
+        // `田口 翔太郎` in a sentence): their tokens get the rules and the budget of unspaced text
+        let cjk = t.script & (script::HAN | script::KANA) != 0;
+        let w = if cjk && usize::from(t.letters) > CJK_WINDOW_CHARS {
             cjk_windows(pack, word, &mut cjk_budget)
+        } else if cjk {
+            word_evidence(pack, word, t.apostrophe, false, &mut cjk_budget)
         } else {
             word_evidence(pack, word, t.apostrophe, spaced_text, &mut budget)
         };

@@ -70,3 +70,13 @@ fn segmentation_gate_is_in_rank_units() {
     assert!(ngram > -2.03 && ngram < -1.45, "{ngram}");
     assert!((coverage - 1.0).abs() < 1e-6, "coverage {coverage}");
 }
+
+#[test]
+fn spaced_han_tokens_are_segmented_like_unspaced_text() {
+    // A space inside Han text (a name, a line break) used to apply the spaced rules: no split
+    // of tokens under 10 letters, so `我们明天` (two words) was an unknown token
+    let (spaced, _, _) = features("我们明天 天气很好");
+    let (unspaced, _, _) = features("我们明天天气很好");
+    assert!((spaced - 1.0).abs() < 1e-6, "coverage {spaced}");
+    assert!((unspaced - 1.0).abs() < 1e-6, "coverage {unspaced}");
+}

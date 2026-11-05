@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Chinese, Japanese and Korean text: a Han, kana or Hangul character counts 3 times when
+  the text's scripts are chosen (Japanese with Latin terms gets Japanese candidates);
+  Han and kana tokens in spaced text get the unspaced rules; flags, hex, URLs and emails
+  glued to CJK text are identifiers; the dominant-letter veto only applies where cased
+  letters are most of the text (`本当に面白い映画でしたwwwwwwwwww` is no longer vetoed).
+  English's output is unchanged on every dev and test text.
+
 ## 6.0.0 (unreleased)
 
 A rewrite: a calibrated, multi-language "is this natural language?" detector, `no_std` and
