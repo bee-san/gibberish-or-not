@@ -143,7 +143,9 @@ packs (next section).
 ## How detection works with many languages
 
 For a text, the language-independent pass finds its words, identifiers (neutral) and
-shape; the text's majority script picks the candidate packs. For a text of 12 or more
+shape; the text's majority script picks the candidate packs. The steps below run per
+script (Han and kana together): packs only compete with packs of their own script, and a
+text in two scripts gets both groups. For a text of 12 or more
 letters, a cheap pre-rank (each pack's order-2 model over the first 32 letters, centred on
 its own language's average) drops the packs under their pre-gate and keeps the best 2,
 and the others within 0.3 of the best (5 at most), for the full n-gram pass. Of those, the

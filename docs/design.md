@@ -181,7 +181,9 @@ the measurement only). For a text of 12 or more letters:
    positives that set the one gate).
 
 Texts under 12 letters skip steps 1–3 and the last two stops (their ranks are noisy, and
-they are cheap). Every pack that is scored computes exactly the features `gib-bench fit`
+they are cheap). Every step runs per script (Han and kana together): ranks of different
+scripts don't compare, and a text in two scripts (half Latin, half Han) must not have one
+script's rejection stop the other's packs (`tests/many_packs.rs`). Every pack that is scored computes exactly the features `gib-bench fit`
 calibrated it on: an earlier version let only near-best packs segment long tokens, and
 the first pilot pack (es) showed that this broke English's calibration. The word table
 also gets a fingerprint filter at load, so that most lookups of words that aren't there

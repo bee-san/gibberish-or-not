@@ -241,19 +241,63 @@ impl Detector {
         }
         let main = a.main_scripts();
         let long = a.letters >= ALL_PACKS_BELOW_LETTERS;
-        // The packs of the text's script. Of a long text, the cheap pre-rank first drops
-        // the packs whose pre-gate it is under, then keeps the best (docs/design.md)
+        // Packs compete within a script: their ranks compare only there. A text that is
+        // half Latin and half Han has candidates of both, chosen and stopped apart, so that
+        // one script's rejection can't stop the other's packs. Han and kana are one group
+        // (Chinese and Japanese share Han).
+        const CJK: u8 = lang::script::HAN | lang::script::KANA;
+        let group_of = |p: &Pack| {
+            if p.scripts() & CJK != 0 {
+                p.scripts() | CJK
+            } else {
+                p.scripts()
+            }
+        };
+        // The groups present, as a set of their values (scripts are 7 bits)
+        let mut groups = 0u128;
+        for p in self.packs.iter().filter(|p| p.scripts() & main != 0) {
+            groups |= 1 << group_of(p);
+        }
+        let stop = STOP_SCORE.max(self.min_score);
+        let mut best: Option<(f32, f32, Lang)> = None;
+        while groups != 0 {
+            let group = groups.trailing_zeros() as u8;
+            groups &= groups - 1;
+            let in_group = |p: &Pack| p.scripts() & main != 0 && group_of(p) == group;
+            if let Some((score, margin, lang)) = self.best_in(&a, long, stop, in_group) {
+                if best.is_none_or(|(s0, m0, _)| (score, margin) > (s0, m0)) {
+                    best = Some((score, margin, lang));
+                }
+                if score >= stop {
+                    break;
+                }
+            }
+        }
+        best.map_or((0.0, None), |(score, _, lang)| (score, Some(lang)))
+    }
+
+    /// The best (score, margin, language) among the packs `in_group` accepts, one script's
+    /// packs: pre-rank and pre-gate (texts of 12+ letters), the full n-gram pass of the best,
+    /// then candidates in rank order until one scores `stop`, or, of a long text, one scores
+    /// under CONTINUE_MIN or is gated (docs/design.md, "Many languages").
+    fn best_in(
+        &self,
+        a: &text::Analysis<'_>,
+        long: bool,
+        stop: f32,
+        in_group: impl Fn(&Pack) -> bool,
+    ) -> Option<(f32, f32, Lang)> {
         let mut packs: Vec<(&Pack, f32)> = self
             .packs
             .iter()
-            .filter(|p| p.scripts() & main != 0)
+            .filter(|p| in_group(p))
             .map(|p| (&**p, f32::INFINITY))
             .collect();
         if long
             && (packs.len() > PRE_MIN
                 || packs.iter().any(|(p, _)| p.calibration.pregate.is_finite()))
         {
-            let lead = model::Lead::new(&a);
+            let lead = model::Lead::new(a);
             for (p, r) in &mut packs {
                 // Hashed models have no pre-rank: they are kept (sorted first)
                 *r = model::pre_rank(p, &lead).unwrap_or(f32::INFINITY);
@@ -279,11 +323,11 @@ impl Detector {
         }
         // The full n-gram pass ranks them. Of a long text, only the best TOP_K within
         // RANK_WINDOW of the best are looked at; short texts get all (their ranks are noisy,
-        // and they are cheap). A pack whose gate the text's rank is below scores 0.
+        // and they are cheap).
         let mut candidates: Vec<(&Pack, model::NgramPass, f32)> = packs
             .iter()
             .filter_map(|&(p, _)| {
-                let ng = model::ngram_pass(p, &a)?;
+                let ng = model::ngram_pass(p, a)?;
                 let rank = ng.rank(p);
                 Some((p, ng, rank))
             })
@@ -294,12 +338,10 @@ impl Detector {
             let top = candidates[0].2;
             candidates.retain(|c| c.2 >= top - RANK_WINDOW);
         }
-        // In rank order, until one scores STOP_SCORE (the text is then language at every
-        // sensitivity, whatever the others would say), or, of a long text, one scores under
-        // CONTINUE_MIN
-        let stop = STOP_SCORE.max(self.min_score);
         let mut best: Option<(f32, f32, Lang)> = None;
         for (pack, ng, rank) in &candidates {
+            // A pack whose gate the text's rank is below scores 0: of a long text it settles
+            // this script (the packs after it fit the text worse); a short one goes on
             if *rank < pack.calibration.gate_for(a.content_chars) {
                 if long {
                     break;
@@ -308,7 +350,7 @@ impl Detector {
             }
             // Every candidate is scored as `features` (and so `gib-bench fit`) scores it:
             // a calibration only holds for features computed the same way
-            let s = model::score_from(pack, &a, ng, true);
+            let s = model::score_from(pack, a, ng, true);
             let better = match best {
                 None => true,
                 Some((score, margin, _)) => (s.score, s.margin) > (score, margin),
@@ -320,7 +362,7 @@ impl Detector {
                 break;
             }
         }
-        best.map_or((0.0, None), |(score, _, lang)| (score, Some(lang)))
+        best
     }
 
     /// The classifier features of `text` for each language that applies, its length without
