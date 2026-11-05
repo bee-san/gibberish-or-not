@@ -158,13 +158,14 @@ fn a_rejection_in_one_script_does_not_stop_the_other() {
     // A text in two scripts, 16 Han and 16 Latin letters: both are main scripts, so a Han
     // pack and English are both candidates. A Han pack that rejects everything (its logit,
     // at most 4, never reaches the first anchor, 100) must not change English's verdict.
-    let model = std::fs::read("tests/fixtures/hashed-za.bin").unwrap();
-    let cal = std::fs::read_to_string("tests/fixtures/hashed-za.calibration.txt").unwrap();
+    // Embedded, as tests/hashed_pack.rs does: the wasip1 run has no file access
+    let model = include_bytes!("fixtures/hashed-za.bin");
+    let cal = include_str!("fixtures/hashed-za.calibration.txt");
     let rejecting = cal.replace("| 0 1 2 3 4", "| 100 101 102 103 104");
     assert_ne!(rejecting, cal);
     let d = Detector::new()
         .languages(&[Lang::En])
-        .with_pack(Pack::from_parts(&model, &rejecting).unwrap());
+        .with_pack(Pack::from_parts(model, &rejecting).unwrap());
     let text = "我们明天见今天天气很好我们去公园 meet me at the usual";
     let alone = Detector::new().languages(&[Lang::En]).detect(text);
     assert!(alone.is_language, "{alone:?}");
