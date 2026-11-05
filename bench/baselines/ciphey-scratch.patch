@@ -1,0 +1,226 @@
+diff --git a/benches/plaintext.rs b/benches/plaintext.rs
+index 92eed6e6..d9eafdea 100644
+--- a/benches/plaintext.rs
++++ b/benches/plaintext.rs
+@@ -1922,6 +1922,62 @@ fn capture(path: &str) {
+     eprintln!("wrote {path}");
+ }
+ 
++/// Scratch (gib-lead): like [`capture`], but keeps the search each text came from
++/// (`category<TAB>set<TAB>name<TAB>text`), up to 400 accepted-at-High and 150 other texts per
++/// search, deduplicated across searches, so gibberish-or-not's corpus can split by search.
++fn capture_cases(path: &str) {
++    log::set_logger(&CAPTURE).expect("a logger was already installed");
++    log::set_max_level(log::LevelFilter::Trace);
++    let lenient = Checker::<Athena>::new().with_sensitivity(Sensitivity::High);
++    let mut rng = Rng(0x0060_1EAD_CA97);
++    let mut seen: HashSet<String> = HashSet::new();
++    let mut out = String::from("# category<TAB>set<TAB>name<TAB>text, captured by gib-lead's scratch capture_cases\n");
++    let cases = e2e_cases();
++    for (i, case) in cases.iter().enumerate() {
++        CAPTURE.texts.lock().unwrap().clear();
++        common::fresh_search();
++        let _ = perform_cracking(&case.input, common::bench_config());
++        std::thread::sleep(Duration::from_millis(50));
++        let texts = std::mem::take(&mut *CAPTURE.texts.lock().unwrap());
++        let expected = match &case.expected {
++            Expected::Text(t) => Some(t.as_str()),
++            Expected::Input => Some(case.input.as_str()),
++            Expected::Nothing => None,
++        };
++        let mut unique: Vec<String> = texts
++            .into_iter()
++            .filter(|t| !t.trim().is_empty())
++            .filter(|t| expected.is_none_or(|e| !same_letters(t, e)))
++            .collect::<HashSet<_>>()
++            .into_iter()
++            .collect();
++        unique.sort();
++        let total = unique.len();
++        let (hard, easy): (Vec<String>, Vec<String>) = unique
++            .into_iter()
++            .partition(|t| lenient.check(t).is_identified);
++        let mut kept = 0;
++        for t in hard.into_iter().take(400) {
++            if seen.insert(t.clone()) {
++                let _ = writeln!(out, "search_hard\t{}\t{}\t{}", case.set, case.name, escape(&t));
++                kept += 1;
++            }
++        }
++        let step = easy.len().div_ceil(150).max(1);
++        let offset = rng.range(0, step - 1);
++        for t in easy.into_iter().skip(offset).step_by(step) {
++            if seen.insert(t.clone()) {
++                let _ = writeln!(out, "search_random\t{}\t{}\t{}", case.set, case.name, escape(&t));
++                kept += 1;
++            }
++        }
++        eprintln!("[{}/{}] {}/{}: {total} distinct texts checked, kept {kept}", i + 1, cases.len(), case.set, case.name);
++    }
++    std::fs::write(path, out).expect("could not write the capture file");
++    log::set_max_level(log::LevelFilter::Off);
++    eprintln!("wrote {path}");
++}
++
+ /// Writes every sample with the verdicts of Athena and the English checker at each
+ /// sensitivity and of the format checkers, for tuning thresholds outside this program.
+ fn dump(samples: &[Sample], path: &str) {
+@@ -2027,6 +2083,7 @@ struct Args {
+     checkers: bool,
+     e2e: Option<u32>,
+     capture: Option<String>,
++    capture_cases: Option<String>,
+     check: bool,
+     tsv: Option<String>,
+     dump: Option<String>,
+@@ -2052,6 +2109,7 @@ fn parse_args() -> Args {
+         checkers: true,
+         e2e: None,
+         capture: None,
++        capture_cases: None,
+         check: false,
+         tsv: None,
+         dump: None,
+@@ -2099,6 +2157,7 @@ fn parse_args() -> Args {
+                 args.decoders = false;
+             }
+             "--capture" => args.capture = Some(value.to_string()),
++            "--capture-cases" => args.capture_cases = Some(value.to_string()),
+             "--check" => args.check = true,
+             "--tsv" => args.tsv = Some(value.to_string()),
+             "--dump" => args.dump = Some(value.to_string()),
+@@ -2131,7 +2190,7 @@ fn main() {
+         return;
+     }
+     // Timeout for the searches: 1 s while capturing, as in the search benches
+-    let timeout = if args.capture.is_some() {
++    let timeout = if args.capture.is_some() || args.capture_cases.is_some() {
+         1
+     } else {
+         args.e2e.unwrap_or(1)
+@@ -2145,6 +2204,10 @@ fn main() {
+         capture(path);
+         return;
+     }
++    if let Some(path) = &args.capture_cases {
++        capture_cases(path);
++        return;
++    }
+ 
+     if args.check {
+         let probes = probes();
+diff --git a/examples/gon_baselines.rs b/examples/gon_baselines.rs
+new file mode 100644
+index 00000000..0017ba0d
+--- /dev/null
++++ b/examples/gon_baselines.rs
+@@ -0,0 +1,109 @@
++//! Scratch (gib-lead, never pushed): baseline verdicts for gibberish-or-not's benchmark corpus.
++//!
++//! Reads `id<TAB>text` lines (text with \t \n \r \\ \xHH \uHHHH escaped) on stdin and writes, per line,
++//! `id<TAB>gon507_low<TAB>gon507_medium<TAB>gon507_high<TAB>english_low<TAB>english_medium<TAB>english_high<TAB>ns_gon507_medium<TAB>ns_english_medium`
++//! where 1 means "accepted as language" (`!is_gibberish` for gibberish-or-not 5.0.7, and
++//! `EnglishChecker::check(..).is_identified`, the English checker as Ciphey uses it today).
++//! Timings are nanoseconds per check, repeated for checks under 2 µs (as benches/plaintext.rs).
++//!
++//! cargo run --release --example gon_baselines < ids_and_texts.tsv > verdicts.tsv
++
++use std::hint::black_box;
++use std::io::{BufRead, Write};
++use std::time::{Duration, Instant};
++
++use ciphey::checkers::{
++    checker_type::{Check, Checker},
++    english::EnglishChecker,
++};
++use gibberish_or_not::{is_gibberish, Sensitivity};
++
++fn unescape(field: &str) -> String {
++    let mut out = String::with_capacity(field.len());
++    let mut chars = field.chars();
++    while let Some(c) = chars.next() {
++        if c != '\\' {
++            out.push(c);
++            continue;
++        }
++        match chars.next() {
++            Some('x') => {
++                let hex: String = chars.by_ref().take(2).collect();
++                out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'));
++            }
++            Some('u') => {
++                let hex: String = chars.by_ref().take(4).collect();
++                out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'));
++            }
++            Some('t') => out.push('\t'),
++            Some('n') => out.push('\n'),
++            Some('r') => out.push('\r'),
++            Some('\\') => out.push('\\'),
++            Some(other) => {
++                out.push('\\');
++                out.push(other);
++            }
++            None => out.push('\\'),
++        }
++    }
++    out
++}
++
++fn timed(check: &dyn Fn(&str) -> bool, text: &str) -> (bool, f64) {
++    let t0 = Instant::now();
++    let hit = check(black_box(text));
++    let first = t0.elapsed();
++    if first >= Duration::from_micros(2) {
++        return (hit, first.as_nanos() as f64);
++    }
++    let reps = (2_000 / first.as_nanos().max(1)).clamp(2, 256) as u32;
++    let t1 = Instant::now();
++    for _ in 0..reps {
++        black_box(check(black_box(text)));
++    }
++    (hit, t1.elapsed().as_nanos() as f64 / f64::from(reps))
++}
++
++fn main() {
++    let sens = [Sensitivity::Low, Sensitivity::Medium, Sensitivity::High];
++    let english: Vec<Checker<EnglishChecker>> = sens
++        .iter()
++        .map(|&s| Checker::<EnglishChecker>::new().with_sensitivity(s))
++        .collect();
++    let lines: Vec<(String, String)> = std::io::stdin()
++        .lock()
++        .lines()
++        .map_while(Result::ok)
++        .filter_map(|l| {
++            let (id, text) = l.split_once('\t')?;
++            Some((id.to_string(), unescape(text)))
++        })
++        .collect();
++    // Warm up lazily built tables
++    for (_, t) in lines.iter().take(200) {
++        black_box(is_gibberish(t, Sensitivity::Medium));
++        black_box(english[1].check(t).is_identified);
++    }
++    let gon_medium = |t: &str| !is_gibberish(t, Sensitivity::Medium);
++    let english_medium = |t: &str| english[1].check(t).is_identified;
++    let stdout = std::io::stdout();
++    let mut out = std::io::BufWriter::new(stdout.lock());
++    for (id, text) in &lines {
++        let g: Vec<u8> = sens
++            .iter()
++            .map(|&s| u8::from(!is_gibberish(text, s)))
++            .collect();
++        let e: Vec<u8> = english
++            .iter()
++            .map(|c| u8::from(c.check(text).is_identified))
++            .collect();
++        let (_, ns_g) = timed(&gon_medium, text);
++        let (_, ns_e) = timed(&english_medium, text);
++        writeln!(
++            out,
++            "{id}\t{}\t{}\t{}\t{}\t{}\t{}\t{ns_g:.0}\t{ns_e:.0}",
++            g[0], g[1], g[2], e[0], e[1], e[2]
++        )
++        .unwrap();
++    }
++}

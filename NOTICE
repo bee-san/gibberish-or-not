@@ -1,0 +1,20 @@
+gibberish-or-not
+Copyright (c) 2025-2026 Autumn Skerritt (bee-san) and contributors. MIT licence (LICENSE).
+
+The language packs (languages/*/model.bin) hold counts and word lists derived from these
+sources. No text of the sources is shipped.
+
+English (languages/en):
+- Project Gutenberg books (https://www.gutenberg.org): public domain in the USA. The book
+  numbers are in languages/en/build.json.
+- Tatoeba (https://tatoeba.org), English sentences, export of 2026-10-31: CC BY 2.0 FR,
+  by the Tatoeba contributors (https://tatoeba.org/en/users/all). Each sentence's author is
+  on its page, https://tatoeba.org/en/sentences/show/<id>.
+- Moby Word Lists by Grady Ward (Project Gutenberg ebook 3201): public domain.
+
+The common-password list behind is_password (src/passwords.rs, wordlists/passwords/) is
+unchanged from gibberish-or-not 5.x.
+
+The benchmark corpus (bench/corpus/v1, not part of the published crate) also contains
+Wikipedia text (CC BY-SA 4.0, evaluation only) and data from Ciphey
+(https://github.com/bee-san/Ciphey, MIT); see bench/corpus/v1/README.md.

@@ -1,0 +1,9 @@
+[package]
+name = "gib-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark, fitting and size tooling for gibberish-or-not (not published)"
+
+[dependencies]
+gibberish-or-not = { path = "..", features = ["std"] }
